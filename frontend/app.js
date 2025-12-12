@@ -1240,6 +1240,51 @@ function getWidgetValue(w, dev) {
   return raw;
 }
 
+/* scale ADC/raw → giá trị hiển thị theo range của widget */
+function scaleAnalogValue(raw, w) {
+  if (raw == null || typeof raw !== "number" || !w) return raw;
+
+  const hasRawRange =
+    typeof w.rawMin === "number" || typeof w.rawMax === "number";
+
+  // Nếu không khai báo raw range thì coi như giá trị đã scale sẵn
+  if (!hasRawRange) return raw;
+
+  const rawMin = typeof w.rawMin === "number" ? w.rawMin : 0;
+  const rawMax =
+    typeof w.rawMax === "number"
+      ? w.rawMax
+      : rawMin + 1;
+
+  const dispMin = typeof w.min === "number" ? w.min : 0;
+  const dispMax = typeof w.max === "number" ? w.max : 100;
+
+  if (rawMax === rawMin) return dispMin;
+
+  const clamped = Math.min(Math.max(raw, rawMin), rawMax);
+  const ratio = (clamped - rawMin) / (rawMax - rawMin);
+  return dispMin + ratio * (dispMax - dispMin);
+}
+
+/* Lấy giá trị hiển thị cuối cùng cho widget */
+function getDisplayValue(w, dev) {
+  const raw = getWidgetValue(w, dev);
+  if (raw == null) return null;
+  if (w.type === "thermo" || w.type === "gauge") {
+    return scaleAnalogValue(raw, w);
+  }
+  return raw;
+}
+
+/* format số cho đẹp */
+function formatWidgetValue(v) {
+  if (v == null) return "--";
+  if (typeof v !== "number") return String(v);
+  if (Number.isNaN(v)) return "--";
+  if (Number.isInteger(v)) return String(v);
+  return v.toFixed(1);
+}
+
 function selectWidget(id, { openConfig = false } = {}) {
   selectedWidgetId = id;
   if (!widgetGrid) return;
@@ -1334,17 +1379,28 @@ function renderWidgets() {
   }
   widgets.forEach((w) => {
     const dev = lastDevices.find((d) => String(d.id) === String(w.deviceId));
-    const val = getWidgetValue(w, dev);
-    const card = document.createElement("div");
+    const val = getDisplayValue(w, dev);
     const theme = w.theme || "green";
     const size = w.size || "m";
+    const card = document.createElement("div");
     card.className = `widget-card widget-${w.type} widget-theme-${theme} widget-size-${size}`;
     card.dataset.id = w.id;
+
+    // status để tô màu tag
+    const hasDev = !!dev;
+    let statusAttr = "nodata";
+    if (dev) {
+      const state = String(dev.lastState || "").toUpperCase();
+      if (state === "ONLINE") statusAttr = "online";
+      else statusAttr = "offline";
+    }
+    card.dataset.status = statusAttr;
+
     if (w.id === selectedWidgetId) card.classList.add("widget-selected");
     const label = w.label || w.type.toUpperCase();
     const devLabel = w.deviceId ? " · " + w.deviceId : "";
-    const hasDev = !!dev;
-    const valueDisplay = val == null ? "--" : val;
+    const valueDisplay = formatWidgetValue(val);
+
     let bodyInner = "";
     if (w.type === "thermo") {
       const min = typeof w.min === "number" ? w.min : 0;
@@ -1375,8 +1431,8 @@ function renderWidgets() {
       const barWidth = (percent * 100).toFixed(0);
       bodyInner = `
         <div class="widget-value-big">${valueDisplay}</div>
-        <div style="height:6px;border-radius:999px;background:#111827;overflow:hidden;margin-top:2px;">
-          <div style="height:100%;width:${barWidth}%;background:linear-gradient(90deg,#22c55e,#eab308,#ef4444);"></div>
+        <div class="widget-gauge-track">
+          <div class="widget-gauge-fill" style="width:${barWidth}%;"></div>
         </div>
         <div class="widget-meta">Range: ${min} – ${max}</div>`;
     } else if (w.type === "slider") {
@@ -1413,7 +1469,13 @@ function renderWidgets() {
       <div class="widget-header">
         <span class="widget-title" title="${label + devLabel}">${label}${devLabel}</span>
         <div style="display:flex;gap:4px;align-items:center;">
-          <span class="widget-tag">${hasDev ? "Online" : "No data"}</span>
+          <span class="widget-tag">${
+            statusAttr === "online"
+              ? "Online"
+              : statusAttr === "offline"
+              ? "Offline"
+              : "No data"
+          }</span>
           <button type="button" class="icon-btn btn-sm widget-config-btn">⚙</button>
           <button type="button" class="icon-btn btn-sm widget-remove">✕</button>
         </div>
@@ -1526,10 +1588,14 @@ if (widgetTypeButtons) {
       if (type === "thermo") {
         w.min = 0;
         w.max = 100;
+        w.rawMin = 0;
+        w.rawMax = 4095; // ADC default, nếu m dùng 16-bit có thể sửa thành 65535
       }
       if (type === "gauge") {
         w.min = 0;
         w.max = 100;
+        w.rawMin = 0;
+        w.rawMax = 4095;
       }
       widgets.push(w);
       selectedWidgetId = w.id;
