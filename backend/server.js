@@ -479,28 +479,6 @@ app.delete("/api/devices/:id", authMiddleware, (req, res) => {
     res.json({ ok: true });
   });
 });
-// Xoá device
-app.delete("/api/devices/:id", authMiddleware, (req, res) => {
-  const deviceId = req.params.id;
-  const user = req.user;
-
-  // Tìm device trong mảng in-memory
-  const idx = devices.findIndex((d) => d.id === deviceId);
-  if (idx === -1) {
-    return res.status(404).json({ error: "Device không tồn tại" });
-  }
-
-  const dev = devices[idx];
-
-  // Nếu không phải admin thì chỉ xoá được device của mình
-  if (user.role !== "admin" && dev.ownerUserId && dev.ownerUserId !== user.id) {
-    return res.status(403).json({ error: "Không có quyền xoá device này" });
-  }
-
-  devices.splice(idx, 1);
-  res.json({ message: "Đã xoá device", id: deviceId });
-});
-
 // ---- ADMIN USERS ----
 
 // List user
