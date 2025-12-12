@@ -147,8 +147,8 @@ const widgetConfigDevice = document.getElementById("widgetConfigDevice");
 const widgetConfigSensor = document.getElementById("widgetConfigSensor");
 const widgetConfigTheme = document.getElementById("widgetConfigTheme");
 const widgetConfigRangeRow = document.getElementById("widgetConfigRangeRow");
-const widgetConfigMin = document.getElementById("widgetConfigRangeMin");
-const widgetConfigMax = document.getElementById("widgetConfigRangeMax");
+const widgetConfigRangeMin = document.getElementById("widgetConfigRangeMin");
+const widgetConfigRangeMax = document.getElementById("widgetConfigRangeMax");
 /* NEW: size selector */
 const widgetConfigSize = document.getElementById("widgetConfigSize");
 
@@ -1275,8 +1275,8 @@ function updateWidgetConfig(w) {
   const needsRange = w.type === "thermo" || w.type === "gauge" || w.type === "slider";
   if (widgetConfigRangeRow) widgetConfigRangeRow.style.display = needsRange ? "flex" : "none";
   if (needsRange) {
-    if (widgetConfigMin) widgetConfigMin.value = typeof w.min === "number" ? w.min : "";
-    if (widgetConfigMax) widgetConfigMax.value = typeof w.max === "number" ? w.max : "";
+    if (widgetConfigRangeMin) widgetConfigRangeMin.value = typeof w.min === "number" ? w.min : "";
+    if (widgetConfigRangeMax) widgetConfigRangeMax.value = typeof w.max === "number" ? w.max : "";
   }
 }
 if (widgetConfigCloseBtn) {
@@ -1594,22 +1594,22 @@ if (widgetConfigSize) {
     syncWidgetCard(w);
   });
 }
-if (widgetConfigMin) {
-  widgetConfigMin.addEventListener("input", () => {
+if (widgetConfigRangeMin) {
+  widgetConfigRangeMin.addEventListener("input", () => {
     if (!selectedWidgetId) return;
     const w = widgets.find((x) => x.id === selectedWidgetId);
     if (!w) return;
-    const v = parseFloat(widgetConfigMin.value);
+    const v = parseFloat(widgetConfigRangeMin.value);
     w.min = isNaN(v) ? null : v;
     renderWidgets();
   });
 }
-if (widgetConfigMax) {
-  widgetConfigMax.addEventListener("input", () => {
+if (widgetConfigRangeMax) {
+  widgetConfigRangeMax.addEventListener("input", () => {
     if (!selectedWidgetId) return;
     const w = widgets.find((x) => x.id === selectedWidgetId);
     if (!w) return;
-    const v = parseFloat(widgetConfigMax.value);
+    const v = parseFloat(widgetConfigRangeMax.value);
     w.max = isNaN(v) ? null : v;
     renderWidgets();
   });
