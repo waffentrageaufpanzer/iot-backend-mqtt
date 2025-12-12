@@ -444,6 +444,32 @@ app.post("/api/devices/:id/control", authMiddleware, (req, res) => {
     fromUserId: req.user.id,
     ts: Date.now(),
   });
+// Xoá device
+app.delete("/api/devices/:id", authMiddleware, (req, res) => {
+  const deviceId = req.params.id;
+
+  // tìm device theo id
+  const idx = devices.findIndex((d) => d.id === deviceId);
+  if (idx === -1) {
+    return res.status(404).json({ error: "Device không tồn tại" });
+  }
+
+  const dev = devices[idx];
+
+  // chỉ cho admin hoặc owner xoá
+  if (
+    req.user.role !== "admin" &&
+    dev.ownerUserId &&
+    dev.ownerUserId !== req.user.id
+  ) {
+    return res
+      .status(403)
+      .json({ error: "Không có quyền xoá device này" });
+  }
+
+  devices.splice(idx, 1);
+  return res.json({ message: "Đã xoá device", id: deviceId });
+});
 
   mqttClient.publish(topic, payload, (err) => {
     if (err) {
