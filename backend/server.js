@@ -629,3 +629,8 @@ app.use(express.static(FRONTEND_DIR));
 app.get("/", (req, res) => {
   res.sendFile(path.join(FRONTEND_DIR, "index.html"));
 });
+
+// ===== START SERVER =====
+app.listen(PORT, () => {
+  console.log(`Backend running at http://localhost:${PORT}`);
+});
