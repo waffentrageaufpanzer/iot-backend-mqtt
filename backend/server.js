@@ -604,6 +604,6 @@ app.get("/", (req, res) => {
 });
 
 // ===== START SERVER =====
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, () => {
   console.log(`Backend running at http://localhost:${PORT}`);
 });
