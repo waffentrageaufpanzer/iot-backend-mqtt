@@ -1279,7 +1279,7 @@ function updateWidgetConfig(w) {
     if (widgetConfigRangeMax) widgetConfigRangeMax.value = typeof w.max === "number" ? w.max : "";
   }
 }
-function widgetConfigClose() {
+function widgetConfigCloseBtn() {
   updateWidgetConfig(null);
 }
 if (widgetConfigCloseBtn) {
