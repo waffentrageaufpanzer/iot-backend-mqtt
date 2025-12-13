@@ -1538,41 +1538,59 @@ function selectWidget(id, { openConfig = false } = {}) {
 }
 
 function updateWidgetConfig(w) {
-  refreshWidgetConfigOptions();
-    const isCameraWidget = w.type === "camera";
-    if (widgetConfigCameraRow) widgetConfigCameraRow.style.display = isCameraWidget ? "flex" : "none";
-
-    if (isCameraWidget) {
-      if (widgetConfigCamera) widgetConfigCamera.value = w.cameraId || "";
-    } else {
-      if (widgetConfigDevice) widgetConfigDevice.value = w.deviceId || "";
-    }
   if (!widgetConfigPanel || !widgetConfigOverlay) return;
+
+  // ✅ 1) Check null TRƯỚC (đừng đụng w.type khi w còn null)
   if (!w) {
     widgetConfigOverlay.classList.remove("open");
     widgetConfigPanel.classList.remove("has-selection");
+
     if (widgetConfigTitle) widgetConfigTitle.value = "";
     if (widgetConfigDevice) widgetConfigDevice.value = "";
+    if (widgetConfigCamera) widgetConfigCamera.value = "";
     if (widgetConfigSensor) widgetConfigSensor.value = "";
     if (widgetConfigTheme) widgetConfigTheme.value = "green";
     if (widgetConfigSize) widgetConfigSize.value = "m";
     if (widgetConfigRangeRow) widgetConfigRangeRow.style.display = "none";
+    if (widgetConfigCameraRow) widgetConfigCameraRow.style.display = "none";
+    // nếu có row device riêng thì bật lại:
+    if (typeof widgetConfigDeviceRow !== "undefined" && widgetConfigDeviceRow)
+      widgetConfigDeviceRow.style.display = "flex";
     return;
   }
+
+  // ✅ 2) Có widget rồi thì mới refresh options
+  refreshWidgetConfigOptions?.();
+
   widgetConfigOverlay.classList.add("open");
   widgetConfigPanel.classList.add("has-selection");
-  if (widgetConfigTitle) widgetConfigTitle.value = w.label || "";
-  if (widgetConfigDevice) widgetConfigDevice.value = w.deviceId || "";
-  if (widgetConfigSensor) widgetConfigSensor.value = w.sensorKey || "";
+
+  const isCameraWidget = w.type === "camera";
+
+  // show/hide row camera
+  if (widgetConfigCameraRow) widgetConfigCameraRow.style.display = isCameraWidget ? "flex" : "none";
+
+  // nếu có row device riêng thì hide khi là camera
+  if (typeof widgetConfigDeviceRow !== "undefined" && widgetConfigDeviceRow)
+    widgetConfigDeviceRow.style.display = isCameraWidget ? "none" : "flex";
+
+  // set value dropdown theo widget
+  if (isCameraWidget) {
+    if (widgetConfigCamera) widgetConfigCamera.value = w.cameraId || "";
+  } else {
+    if (widgetConfigDevice) widgetConfigDevice.value = w.deviceId || "";
+  }
+
+  // phần còn lại của m giữ nguyên (title/theme/size/range...)
+  if (widgetConfigTitle) widgetConfigTitle.value = w.title || "";
   if (widgetConfigTheme) widgetConfigTheme.value = w.theme || "green";
   if (widgetConfigSize) widgetConfigSize.value = w.size || "m";
-  const needsRange = w.type === "thermo" || w.type === "gauge" || w.type === "slider";
-  if (widgetConfigRangeRow) widgetConfigRangeRow.style.display = needsRange ? "flex" : "none";
-  if (needsRange) {
-    if (widgetConfigRangeMin) widgetConfigRangeMin.value = typeof w.min === "number" ? w.min : "";
-    if (widgetConfigRangeMax) widgetConfigRangeMax.value = typeof w.max === "number" ? w.max : "";
-  }
+
+  // ví dụ: slider/gauge hiện range
+  const hasRange = w.type === "slider" || w.type === "gauge";
+  if (widgetConfigRangeRow) widgetConfigRangeRow.style.display = hasRange ? "flex" : "none";
 }
+
 if (widgetConfigCloseBtn) {
   widgetConfigCloseBtn.onclick = (e) => {
     e.stopPropagation();
