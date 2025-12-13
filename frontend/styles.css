@@ -1382,3 +1382,103 @@ body[data-theme="light"] #fwPinsTableBody select.fw-pin-mode {
   border-color: #e5e7eb;
   color: #0f172a;
 }
+/* ===== Better select contrast (firmware pin mode + config) ===== */
+.widget-config-row select,
+.fw-pin-mode,
+select {
+  color: var(--text-main);
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(55, 65, 81, 0.95);
+  color-scheme: dark;
+}
+
+.widget-config-row select option,
+.fw-pin-mode option,
+select option {
+  background: #0b1220;
+  color: #e5e7eb;
+}
+
+body[data-theme="light"] .widget-config-row select,
+body[data-theme="light"] .fw-pin-mode,
+body[data-theme="light"] select {
+  background: #ffffff;
+  border-color: #d1d5db;
+  color: #111827;
+  color-scheme: light;
+}
+
+body[data-theme="light"] .widget-config-row select option,
+body[data-theme="light"] .fw-pin-mode option,
+body[data-theme="light"] select option {
+  background: #ffffff;
+  color: #111827;
+}
+
+/* ===== Gauge bar nicer ===== */
+.widget-gauge-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.55);
+  border: 1px solid rgba(55, 65, 81, 0.65);
+  overflow: hidden;
+}
+.widget-gauge-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #22c55e, #38bdf8, #fb923c, #ef4444);
+}
+
+/* ===== Camera widget ===== */
+.widget-camera {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.widget-camera-img {
+  width: 100%;
+  height: 150px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid rgba(31, 41, 55, 0.95);
+  background: #020617;
+}
+.widget-camera-empty {
+  height: 150px;
+  border-radius: 12px;
+  border: 1px dashed rgba(148, 163, 184, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-soft);
+  background: rgba(2, 6, 23, 0.35);
+}
+
+/* ===== Button widget ===== */
+.widget-action-btn {
+  width: 100%;
+  border-radius: 14px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-shadow: 0 14px 30px rgba(56, 189, 248, 0.25);
+}
+
+.widget-action-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #38bdf8;
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.7);
+}
+
+.widget-action-btn.pressed {
+  transform: translateY(1px) scale(0.99);
+  filter: brightness(1.05);
+}

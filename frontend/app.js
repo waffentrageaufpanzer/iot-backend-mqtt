@@ -1363,12 +1363,43 @@ function syncWidgetCard(w) {
     "widget-size-" + (w.size || "m"),
   );
 }
+function toBool(raw) {
+  if (raw == null) return null;
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "number") return raw > 0;
+  if (typeof raw === "string") {
+    const s = raw.trim().toLowerCase();
+    if (["1", "on", "true", "high"].includes(s)) return true;
+    if (["0", "off", "false", "low"].includes(s)) return false;
+  }
+  return null;
+}
+
+function getSwitchState(w, dev) {
+  // Ưu tiên dữ liệu từ device (sensorKey/lastValue), nếu không có thì dùng optimistic state
+  const raw = getWidgetValue(w, dev);
+  const b = toBool(raw);
+  if (b !== null) return b;
+  if (typeof w._optimistic === "boolean") return w._optimistic;
+  return false;
+}
+
+// Debounce gửi analog để slider kéo là có gửi thật, không spam
+function scheduleAnalogSend(w, deviceId, value) {
+  w._analogLast = value;
+  if (w._analogTimer) clearTimeout(w._analogTimer);
+  w._analogTimer = setTimeout(() => {
+    sendCommand(deviceId, { command: "analog", value: w._analogLast || 0 });
+  }, 180);
+}
 
 /* render widgets */
 function renderWidgets() {
   if (!widgetGrid) return;
+
   widgetGrid.innerHTML = "";
   widgetGrid.classList.toggle("widgets-running", widgetsRunning);
+
   if (!widgets.length) {
     const d = document.createElement("div");
     d.className = "empty-hint";
@@ -1377,31 +1408,36 @@ function renderWidgets() {
     updateWidgetConfig(null);
     return;
   }
+
   widgets.forEach((w) => {
+    // device cho widget (trừ camera)
     const dev = lastDevices.find((d) => String(d.id) === String(w.deviceId));
-    const val = getDisplayValue(w, dev);
+    const val = getWidgetValue(w, dev);
+
+    const card = document.createElement("div");
     const theme = w.theme || "green";
     const size = w.size || "m";
-    const card = document.createElement("div");
     card.className = `widget-card widget-${w.type} widget-theme-${theme} widget-size-${size}`;
     card.dataset.id = w.id;
 
-    // status để tô màu tag
-    const hasDev = !!dev;
-    let statusAttr = "nodata";
-    if (dev) {
-      const state = String(dev.lastState || "").toUpperCase();
-      if (state === "ONLINE") statusAttr = "online";
-      else statusAttr = "offline";
-    }
-    card.dataset.status = statusAttr;
-
     if (w.id === selectedWidgetId) card.classList.add("widget-selected");
+
     const label = w.label || w.type.toUpperCase();
     const devLabel = w.deviceId ? " · " + w.deviceId : "";
-    const valueDisplay = formatWidgetValue(val);
 
+    // Tag theo từng loại
+    let tagText = "No data";
+    if (w.type === "camera") {
+      const cam = cameras.find((c) => String(c.id) === String(w.deviceId));
+      tagText = cam ? "Camera" : "No camera";
+    } else {
+      tagText = dev ? "Online" : "No data";
+    }
+
+    // ===== BODY CONTENT =====
     let bodyInner = "";
+    const valueDisplay = val == null ? "--" : val;
+
     if (w.type === "thermo") {
       const min = typeof w.min === "number" ? w.min : 0;
       const max = typeof w.max === "number" ? w.max : 100;
@@ -1421,7 +1457,9 @@ function renderWidgets() {
             <div class="widget-meta">Range: ${min} – ${max}</div>
           </div>
         </div>`;
-    } else if (w.type === "gauge") {
+    }
+
+    if (w.type === "gauge") {
       const min = typeof w.min === "number" ? w.min : 0;
       const max = typeof w.max === "number" ? w.max : 100;
       let percent = 0;
@@ -1431,22 +1469,27 @@ function renderWidgets() {
       const barWidth = (percent * 100).toFixed(0);
       bodyInner = `
         <div class="widget-value-big">${valueDisplay}</div>
-        <div class="widget-gauge-track">
+        <div class="widget-gauge-bar">
           <div class="widget-gauge-fill" style="width:${barWidth}%;"></div>
         </div>
         <div class="widget-meta">Range: ${min} – ${max}</div>`;
-    } else if (w.type === "slider") {
+    }
+
+    if (w.type === "slider") {
       const min = typeof w.min === "number" ? w.min : 0;
       const max = typeof w.max === "number" ? w.max : 100;
       const sliderVal =
         typeof w.currentValue === "number" ? w.currentValue : Math.round((min + max) / 2);
+
       bodyInner = `
         <div class="widget-slider-row widget-control">
           <input type="range" min="${min}" max="${max}" value="${sliderVal}" class="widget-slider-input">
           <span class="widget-slider-value">${sliderVal}</span>
         </div>
-        <div class="widget-meta">Analog: ${min} – ${max}</div>`;
-    } else if (w.type === "dpad") {
+        <div class="widget-meta">Range: ${min} – ${max}</div>`;
+    }
+
+    if (w.type === "dpad") {
       bodyInner = `
         <div class="widget-dpad widget-control">
           <div class="widget-dpad-row">
@@ -1461,21 +1504,41 @@ function renderWidgets() {
             <button type="button" class="dpad-btn" data-dir="down">↓</button>
           </div>
         </div>`;
-    } else {
-      bodyInner = `<div class="widget-meta">Last: ${valueDisplay}</div>`;
     }
-    const isOn = dev && String(dev.lastState || "").toUpperCase() === "ONLINE";
+
+    if (w.type === "camera") {
+      const cam = cameras.find((c) => String(c.id) === String(w.deviceId));
+      const url = cam?.snapshotUrl || "";
+      const src = url ? `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}` : "";
+      bodyInner = `
+        <div class="widget-camera">
+          ${
+            src
+              ? `<img class="widget-camera-img" src="${src}" alt="camera">`
+              : `<div class="widget-camera-empty">Chưa set Camera ID</div>`
+          }
+          <div class="widget-meta">${cam?.name || ""}</div>
+        </div>`;
+    }
+
+    if (w.type === "button") {
+      const text = w.label?.trim() || "BUTTON";
+      bodyInner = `
+        <button type="button" class="widget-action-btn widget-control">
+          <span class="widget-action-dot"></span>
+          <span>${text}</span>
+        </button>
+        <div class="widget-meta">Command: ${w.sensorKey || "button"}</div>`;
+    }
+
+    // ===== SWITCH: FIX label ON/OFF =====
+    const isSwitchOn = w.type === "switch" ? getSwitchState(w, dev) : false;
+
     card.innerHTML = `
       <div class="widget-header">
         <span class="widget-title" title="${label + devLabel}">${label}${devLabel}</span>
         <div style="display:flex;gap:4px;align-items:center;">
-          <span class="widget-tag">${
-            statusAttr === "online"
-              ? "Online"
-              : statusAttr === "offline"
-              ? "Offline"
-              : "No data"
-          }</span>
+          <span class="widget-tag">${tagText}</span>
           <button type="button" class="icon-btn btn-sm widget-config-btn">⚙</button>
           <button type="button" class="icon-btn btn-sm widget-remove">✕</button>
         </div>
@@ -1484,20 +1547,25 @@ function renderWidgets() {
         ${
           w.type === "switch"
             ? `<button type="button" class="widget-switch-btn widget-control ${
-                isOn ? "on" : "off"
+                isSwitchOn ? "on" : "off"
               }">
-               <span class="widget-switch-track">
-                 <span class="widget-switch-thumb"></span>
-               </span>
-               <span class="widget-switch-label">${isOn ? "ON" : "OFF"}</span>
-             </button>`
+                 <span class="widget-switch-track">
+                   <span class="widget-switch-thumb"></span>
+                 </span>
+                 <span class="widget-switch-label">${isSwitchOn ? "ON" : "OFF"}</span>
+               </button>`
             : ""
         }
+
         ${w.type !== "switch" ? bodyInner : ""}
+
         <div class="widget-meta">Device: ${w.deviceId || "-"}${
           w.sensorKey ? " · " + w.sensorKey : ""
         }</div>
-      </div>`;
+      </div>
+    `;
+
+    // ===== remove / config =====
     const btnRemove = card.querySelector(".widget-remove");
     btnRemove.onclick = (e) => {
       e.stopPropagation();
@@ -1505,11 +1573,14 @@ function renderWidgets() {
       if (selectedWidgetId === w.id) selectedWidgetId = null;
       renderWidgets();
     };
+
     const btnCfg = card.querySelector(".widget-config-btn");
     btnCfg.onclick = (e) => {
       e.stopPropagation();
       selectWidget(w.id, { openConfig: true });
     };
+
+    // ===== switch click: optimistic update =====
     if (w.type === "switch") {
       const sw = card.querySelector(".widget-switch-btn");
       sw.onclick = (e) => {
@@ -1518,26 +1589,38 @@ function renderWidgets() {
           alert("Chưa set Device ID.");
           return;
         }
+        // flip UI ngay lập tức cho đỡ “đứng hình”
+        w._optimistic = !getSwitchState(w, dev);
+        renderWidgets();
         sendToggle(w.deviceId);
       };
     }
+
+    // ===== slider: gửi thật =====
     if (w.type === "slider") {
       const slider = card.querySelector(".widget-slider-input");
       const lbl = card.querySelector(".widget-slider-value");
+
       slider.oninput = (e) => {
         e.stopPropagation();
         w.currentValue = parseInt(slider.value, 10);
         if (lbl) lbl.textContent = w.currentValue;
+
+        if (w.deviceId) scheduleAnalogSend(w, w.deviceId, w.currentValue);
       };
+
       slider.onchange = (e) => {
         e.stopPropagation();
         if (!w.deviceId) {
           alert("Chưa set Device ID.");
           return;
         }
+        // thả tay là gửi phát chắc chắn
         sendCommand(w.deviceId, { command: "analog", value: w.currentValue || 0 });
       };
     }
+
+    // ===== dpad =====
     if (w.type === "dpad") {
       card.querySelectorAll(".dpad-btn").forEach((btn) => {
         btn.onclick = (e) => {
@@ -1551,12 +1634,31 @@ function renderWidgets() {
         };
       });
     }
+
+    // ===== button widget =====
+    if (w.type === "button") {
+      const b = card.querySelector(".widget-action-btn");
+      b.onclick = (e) => {
+        e.stopPropagation();
+        if (!w.deviceId) {
+          alert("Chưa set Device ID.");
+          return;
+        }
+        const cmd = w.sensorKey || "button";
+        sendCommand(w.deviceId, { command: cmd, action: "press" });
+        b.classList.add("pressed");
+        setTimeout(() => b.classList.remove("pressed"), 180);
+      };
+    }
+
+    // select widget card
     card.onclick = (e) => {
       const isControl = e.target.closest(".widget-control");
       const isButton = e.target.tagName.toLowerCase() === "button";
       if (isControl || isButton) return;
       selectWidget(w.id, { openConfig: false });
     };
+
     widgetGrid.appendChild(card);
   });
 }
@@ -1572,14 +1674,42 @@ if (widgetTypeButtons) {
     btn.onclick = () => {
       const type = btn.getAttribute("data-type");
       const w = {
-        id: "w" + ++widgetIdCounter,
-        type,
-        deviceId: "",
-        sensorKey: null,
-        theme: "green",
-        label: "",
-        size: "m", // default medium
-      };
+  id: "w" + ++widgetIdCounter,
+  type,
+  deviceId: "",
+  sensorKey: null,
+  theme: "green",
+  label: "",
+  size: "m",
+};
+
+if (type === "slider") {
+  w.currentValue = 50;
+  w.min = 0;
+  w.max = 100;
+  w.theme = "blue";
+}
+if (type === "thermo") {
+  w.min = 0;
+  w.max = 100;
+  w.theme = "amber";
+}
+if (type === "gauge") {
+  w.min = 0;
+  w.max = 100;
+  w.theme = "green";
+}
+if (type === "camera") {
+  w.theme = "pink";
+  w.size = "l";
+  // deviceId = cameraId (đã register ở tab Camera)
+}
+if (type === "button") {
+  w.theme = "blue";
+  w.label = "Button";
+  w.sensorKey = "button"; // command mặc định
+}
+
       if (type === "slider") {
         w.currentValue = 50;
         w.min = 0;
