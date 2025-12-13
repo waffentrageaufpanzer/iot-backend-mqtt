@@ -13,7 +13,7 @@ const app = express();
 
 const PORT = process.env.PORT || 4000;
 const MQTT_URL = process.env.MQTT_URL || "mqtt://broker.hivemq.com:1883";
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
+const JWT_SECRET = process.env.JWT_SECRET || "hieudeptrai123";
 const MAX_USERS = parseInt(process.env.MAX_USERS || "10", 10);
 
 // ===== MIDDLEWARE =====
