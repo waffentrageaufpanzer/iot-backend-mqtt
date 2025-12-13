@@ -1,27 +1,117 @@
 // server.js
 require("dotenv").config();
 
+const fs = require("fs");
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const mqtt = require("mqtt");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
-const path = require("path");
 
 const app = express();
 
+// ===== CONFIG =====
 const PORT = process.env.PORT || 4000;
 const MQTT_URL = process.env.MQTT_URL || "mqtt://broker.hivemq.com:1883";
 const JWT_SECRET = process.env.JWT_SECRET || "hieudeptrai123";
 const MAX_USERS = parseInt(process.env.MAX_USERS || "10", 10);
 
+// Luu du lieu ra file (de login o noi khac van con)
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
+const DB_FILE = process.env.DB_FILE || path.join(DATA_DIR, "db.json");
+
 // ===== MIDDLEWARE =====
-app.use(cors());
+app.use(cors({ origin: true }));
 app.use(express.json({ limit: "2mb" }));
 
 // Parser cho JPEG (camera)
 const jpegParser = express.raw({ type: "image/jpeg", limit: "10mb" });
+
+// ===== DB (PERSISTENT JSON) =====
+// db structure:
+// {
+//   nextUserId: number,
+//   users: [],
+//   deviceRegistry: [],   // {id, name, ownerUserId, createdAt, updatedAt}
+//   cameraRegistry: [],   // {id, name, ownerUserId, createdAt, updatedAt}
+//   widgetsByUser: { [userId]: any } // layout/widgets config
+// }
+function ensureDirSync(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function loadDbSync() {
+  ensureDirSync(DATA_DIR);
+
+  if (!fs.existsSync(DB_FILE)) {
+    const init = {
+      nextUserId: 1,
+      users: [],
+      deviceRegistry: [],
+      cameraRegistry: [],
+      widgetsByUser: {},
+    };
+    fs.writeFileSync(DB_FILE, JSON.stringify(init, null, 2), "utf8");
+    return init;
+  }
+
+  try {
+    const raw = fs.readFileSync(DB_FILE, "utf8");
+    const data = JSON.parse(raw);
+
+    // sanitize toi thieu
+    data.nextUserId = Number(data.nextUserId || 1);
+    data.users = Array.isArray(data.users) ? data.users : [];
+    data.deviceRegistry = Array.isArray(data.deviceRegistry)
+      ? data.deviceRegistry
+      : [];
+    data.cameraRegistry = Array.isArray(data.cameraRegistry)
+      ? data.cameraRegistry
+      : [];
+    data.widgetsByUser =
+      data.widgetsByUser && typeof data.widgetsByUser === "object"
+        ? data.widgetsByUser
+        : {};
+
+    return data;
+  } catch (e) {
+    console.error("DB parse failed, tao backup va tao db moi:", e.message);
+    try {
+      fs.copyFileSync(DB_FILE, DB_FILE + ".broken_" + Date.now());
+    } catch {}
+    const init = {
+      nextUserId: 1,
+      users: [],
+      deviceRegistry: [],
+      cameraRegistry: [],
+      widgetsByUser: {},
+    };
+    fs.writeFileSync(DB_FILE, JSON.stringify(init, null, 2), "utf8");
+    return init;
+  }
+}
+
+let db = loadDbSync();
+let saveTimer = null;
+
+function scheduleSaveDb() {
+  // debounce de tranh ghi file lien tuc
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    try {
+      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf8");
+    } catch (e) {
+      console.error("Save DB failed:", e.message);
+    }
+  }, 200);
+}
+
+// ===== IN-MEMORY RUNTIME STATE =====
+const devicesRuntime = []; // state realtime tu MQTT
+const cameraFrames = new Map(); // key: cameraId => { buffer, contentType, updatedAt }
 
 // ===== EMAIL / OTP =====
 let mailer = null;
@@ -36,7 +126,7 @@ if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
   console.log("Email: Gmail transporter configured");
 } else {
   console.log(
-    "Email: EMAIL_USER / EMAIL_PASS chưa cấu hình, OTP sẽ chỉ in ra console."
+    "Email: EMAIL_USER / EMAIL_PASS chua cau hinh, OTP se chi in ra console."
   );
 }
 
@@ -55,31 +145,25 @@ async function sendOtpEmail(to, code) {
   const mailOptions = {
     from,
     to,
-    subject: "IoT Platform - Mã OTP xác nhận email",
-    text: `Mã OTP của bạn là: ${code}\nHiệu lực trong 15 phút.`,
+    subject: "IoT Platform - Ma OTP xac nhan email",
+    text: `Ma OTP cua ban la: ${code}\nHieu luc trong 15 phut.`,
     html: `
-      <p>Chào bạn,</p>
-      <p>Mã OTP xác nhận email cho IoT Platform là:</p>
+      <p>Chao ban,</p>
+      <p>Ma OTP xac nhan email cho IoT Platform la:</p>
       <h2 style="font-family: monospace; letter-spacing: 2px;">${code}</h2>
-      <p>Mã này có hiệu lực trong 15 phút.</p>
+      <p>Ma nay co hieu luc trong 15 phut.</p>
     `,
   };
 
   try {
     await mailer.sendMail(mailOptions);
-    console.log("Đã gửi OTP đến", to);
+    console.log("Da gui OTP den", to);
   } catch (err) {
     console.error("Send OTP email error:", err.message);
   }
 }
 
-// ===== IN-MEMORY DATA =====
-let users = [];
-let devices = [];
-let nextUserId = 1;
-const cameraFrames = new Map(); // key: userId => { buffer, contentType, updatedAt }
-
-// Helper: public user info
+// ===== HELPERS =====
 function publicUser(u) {
   return {
     id: u.id,
@@ -91,16 +175,22 @@ function publicUser(u) {
   };
 }
 
-// Tạo admin mặc định
+function allocUserId() {
+  const id = db.nextUserId;
+  db.nextUserId += 1;
+  scheduleSaveDb();
+  return id;
+}
+
 function ensureDefaultAdmin() {
-  if (users.find((u) => u.username === "admin")) return;
+  if (db.users.find((u) => u.username === "admin")) return;
 
   const hash = bcrypt.hashSync("admin123", 10);
   const now = new Date().toISOString();
   const adminEmail = process.env.ADMIN_EMAIL || null;
 
   const adminUser = {
-    id: nextUserId++,
+    id: allocUserId(),
     username: "admin",
     passwordHash: hash,
     role: "admin",
@@ -110,22 +200,18 @@ function ensureDefaultAdmin() {
     otpExpires: null,
     createdAt: now,
   };
-  users.push(adminUser);
 
-  console.log("Đã tạo user admin mặc định: admin / admin123");
-  if (!adminEmail) {
-    console.log("Admin chưa có email, có thể set sau.");
-  }
+  db.users.push(adminUser);
+  scheduleSaveDb();
+
+  console.log("Da tao user admin mac dinh: admin / admin123");
+  if (!adminEmail) console.log("Admin chua co email, co the set sau.");
 }
 ensureDefaultAdmin();
 
-// ===== JWT / AUTH MIDDLEWARE =====
+// ===== JWT / AUTH =====
 function signToken(user) {
-  const payload = {
-    id: user.id,
-    username: user.username,
-    role: user.role,
-  };
+  const payload = { id: user.id, username: user.username, role: user.role };
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
 }
 
@@ -137,16 +223,11 @@ function authMiddleware(req, res, next) {
   }
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = users.find((u) => u.id === decoded.id);
-    if (!user) {
-      return res.status(401).json({ error: "User not found or deleted" });
-    }
-    req.user = {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-    };
-    req._userObj = user; // raw object
+    const user = db.users.find((u) => u.id === decoded.id);
+    if (!user) return res.status(401).json({ error: "User not found or deleted" });
+
+    req.user = { id: user.id, username: user.username, role: user.role };
+    req._userObj = user;
     next();
   } catch (err) {
     return res.status(401).json({ error: "Invalid token" });
@@ -160,35 +241,58 @@ function adminOnly(req, res, next) {
   next();
 }
 
-// ===== MQTT =====
-const mqttClient = mqtt.connect(MQTT_URL);
+// ===== DEVICE REGISTRY + RUNTIME =====
+function getRegistryDevice(deviceId) {
+  return db.deviceRegistry.find((d) => d.id === deviceId) || null;
+}
 
-mqttClient.on("connect", () => {
-  console.log("MQTT connected to", MQTT_URL);
-  // topic demo: iot/demo/<deviceId>/state
-  mqttClient.subscribe("iot/demo/+/state", (err) => {
-    if (err) console.error("MQTT subscribe error:", err.message);
-    else console.log("Subscribed topic: iot/demo/+/state");
-  });
-});
+function upsertRegistryDevice(deviceId, patch) {
+  let dev = getRegistryDevice(deviceId);
+  const now = new Date().toISOString();
 
-mqttClient.on("error", (err) => {
-  console.error("MQTT error:", err.message);
-});
-
-function upsertDevice(deviceId, msg) {
-  let dev = devices.find((d) => d.id === deviceId);
   if (!dev) {
     dev = {
       id: deviceId,
-      name: msg.name || "",
-      ownerUserId: msg.ownerUserId || null,
-      lastState: null,
+      name: patch.name || "",
+      ownerUserId: patch.ownerUserId || null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    db.deviceRegistry.push(dev);
+  } else {
+    if (typeof patch.name === "string") dev.name = patch.name;
+    if (patch.ownerUserId !== undefined) dev.ownerUserId = patch.ownerUserId;
+    dev.updatedAt = now;
+  }
+
+  scheduleSaveDb();
+  return dev;
+}
+
+function getRuntimeDevice(deviceId) {
+  return devicesRuntime.find((d) => d.id === deviceId) || null;
+}
+
+function upsertRuntimeDevice(deviceId, msg) {
+  let dev = getRuntimeDevice(deviceId);
+  if (!dev) {
+    dev = {
+      id: deviceId,
+      name: "",
+      ownerUserId: null,
+      lastState: "UNKNOWN",
       lastValue: null,
       sensors: {},
       updatedAt: null,
     };
-    devices.push(dev);
+    devicesRuntime.push(dev);
+  }
+
+  // merge registry info (owner/name)
+  const reg = getRegistryDevice(deviceId);
+  if (reg) {
+    dev.name = reg.name || dev.name;
+    dev.ownerUserId = reg.ownerUserId ?? dev.ownerUserId;
   }
 
   dev.name = msg.name || dev.name;
@@ -201,7 +305,111 @@ function upsertDevice(deviceId, msg) {
     dev.sensors = { ...dev.sensors, ...msg.sensors };
   }
   dev.updatedAt = new Date().toISOString();
+  return dev;
 }
+
+function buildDeviceListForUser(user) {
+  // base: registry devices (de hien ca khi offline)
+  const list = [];
+
+  for (const reg of db.deviceRegistry) {
+    if (user.role === "admin") {
+      list.push({
+        id: reg.id,
+        name: reg.name || "",
+        ownerUserId: reg.ownerUserId || null,
+        lastState: "UNKNOWN",
+        lastValue: null,
+        sensors: {},
+        updatedAt: reg.updatedAt || null,
+      });
+    } else {
+      // show device chua owner hoac owner la user
+      if (!reg.ownerUserId || reg.ownerUserId === user.id) {
+        list.push({
+          id: reg.id,
+          name: reg.name || "",
+          ownerUserId: reg.ownerUserId || null,
+          lastState: "UNKNOWN",
+          lastValue: null,
+          sensors: {},
+          updatedAt: reg.updatedAt || null,
+        });
+      }
+    }
+  }
+
+  // overlay runtime state
+  const byId = new Map(list.map((d) => [d.id, d]));
+  for (const rt of devicesRuntime) {
+    if (user.role !== "admin") {
+      if (rt.ownerUserId && rt.ownerUserId !== user.id) continue;
+    }
+    const cur = byId.get(rt.id);
+    if (cur) {
+      cur.lastState = rt.lastState;
+      cur.lastValue = rt.lastValue;
+      cur.sensors = rt.sensors;
+      cur.updatedAt = rt.updatedAt;
+      if (rt.name) cur.name = rt.name;
+      if (rt.ownerUserId !== undefined) cur.ownerUserId = rt.ownerUserId;
+    } else {
+      byId.set(rt.id, { ...rt });
+    }
+  }
+
+  return Array.from(byId.values());
+}
+
+// ===== CAMERA REGISTRY =====
+function getRegistryCamera(cameraId) {
+  return db.cameraRegistry.find((c) => c.id === cameraId) || null;
+}
+
+function upsertRegistryCamera(cameraId, patch) {
+  let cam = getRegistryCamera(cameraId);
+  const now = new Date().toISOString();
+
+  if (!cam) {
+    cam = {
+      id: cameraId,
+      name: patch.name || "",
+      ownerUserId: patch.ownerUserId || null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    db.cameraRegistry.push(cam);
+  } else {
+    if (typeof patch.name === "string") cam.name = patch.name;
+    if (patch.ownerUserId !== undefined) cam.ownerUserId = patch.ownerUserId;
+    cam.updatedAt = now;
+  }
+
+  scheduleSaveDb();
+  return cam;
+}
+
+function buildCameraListForUser(user) {
+  if (user.role === "admin") return db.cameraRegistry;
+  return db.cameraRegistry.filter(
+    (c) => !c.ownerUserId || c.ownerUserId === user.id
+  );
+}
+
+// ===== MQTT =====
+const mqttClient = mqtt.connect(MQTT_URL);
+
+mqttClient.on("connect", () => {
+  console.log("MQTT connected to", MQTT_URL);
+  mqttClient.subscribe("iot/demo/+/state", (err) => {
+    if (err) console.error("MQTT subscribe error:", err.message);
+    else console.log("Subscribed topic: iot/demo/+/state");
+  });
+});
+
+mqttClient.on("error", (err) => {
+  console.error("MQTT error:", err.message);
+});
 
 mqttClient.on("message", (topic, payload) => {
   try {
@@ -209,7 +417,7 @@ mqttClient.on("message", (topic, payload) => {
     if (!match) return;
     const deviceId = match[1];
     const msg = JSON.parse(payload.toString("utf8"));
-    upsertDevice(deviceId, msg);
+    upsertRuntimeDevice(deviceId, msg);
   } catch (err) {
     console.error("MQTT message error:", err.message);
   }
@@ -219,79 +427,60 @@ mqttClient.on("message", (topic, payload) => {
 
 // Health check
 app.get("/api/health", (req, res) => {
-  res.json({
-    status: "ok",
-    now: new Date().toISOString(),
-  });
+  res.json({ status: "ok", now: new Date().toISOString() });
 });
 
-// ---- AUTH ----
-
-// Login
+// ===== AUTH =====
 app.post("/api/auth/login", (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) {
-    return res
-      .status(400)
-      .json({ error: "Thiếu username hoặc password" });
+    return res.status(400).json({ error: "Thieu username hoac password" });
   }
-  const user = users.find((u) => u.username === username);
-  if (!user) {
-    return res.status(401).json({ error: "Sai tài khoản hoặc mật khẩu" });
-  }
+
+  const user = db.users.find((u) => u.username === username);
+  if (!user) return res.status(401).json({ error: "Sai tai khoan hoac mat khau" });
+
   const ok = bcrypt.compareSync(password, user.passwordHash);
-  if (!ok) {
-    return res.status(401).json({ error: "Sai tài khoản hoặc mật khẩu" });
-  }
+  if (!ok) return res.status(401).json({ error: "Sai tai khoan hoac mat khau" });
+
   const token = signToken(user);
-  res.json({
-    token,
-    user: publicUser(user),
-  });
+  res.json({ token, user: publicUser(user) });
 });
 
-// Public register (user thường), có email + confirm password + OTP
+// Public register
 app.post("/api/auth/register-public", (req, res) => {
   const { username, password, confirmPassword, email } = req.body || {};
 
   if (!username || !password || !confirmPassword || !email) {
-    return res
-      .status(400)
-      .json({ error: "Thiếu username, email hoặc password" });
+    return res.status(400).json({ error: "Thieu username, email hoac password" });
   }
   if (password !== confirmPassword) {
-    return res.status(400).json({ error: "Mật khẩu xác nhận không trùng" });
+    return res.status(400).json({ error: "Mat khau xac nhan khong trung" });
   }
   if (password.length < 6) {
-    return res
-      .status(400)
-      .json({ error: "Mật khẩu tối thiểu 6 ký tự" });
+    return res.status(400).json({ error: "Mat khau toi thieu 6 ky tu" });
   }
-
   if (!/^[^@]+@[^@]+\.[^@]+$/.test(email)) {
-    return res.status(400).json({ error: "Email không hợp lệ" });
+    return res.status(400).json({ error: "Email khong hop le" });
   }
 
-  if (users.length >= MAX_USERS) {
-    return res.status(400).json({
-      error: `Vượt quá số user cho phép (${MAX_USERS}).`,
-    });
+  if (db.users.length >= MAX_USERS) {
+    return res.status(400).json({ error: `Vuot qua so user cho phep (${MAX_USERS}).` });
   }
 
-  if (users.find((u) => u.username === username)) {
-    return res.status(400).json({ error: "Username đã tồn tại" });
+  if (db.users.find((u) => u.username === username)) {
+    return res.status(400).json({ error: "Username da ton tai" });
   }
-
-  if (users.find((u) => u.email === email)) {
-    return res.status(400).json({ error: "Email đã được sử dụng" });
+  if (db.users.find((u) => u.email === email)) {
+    return res.status(400).json({ error: "Email da duoc su dung" });
   }
 
   const now = new Date().toISOString();
   const passwordHash = bcrypt.hashSync(password, 10);
-  const id = nextUserId++;
+  const id = allocUserId();
 
   const otpCode = (Math.floor(100000 + Math.random() * 900000)).toString();
-  const otpExpires = Date.now() + 15 * 60 * 1000; // 15 phút
+  const otpExpires = Date.now() + 15 * 60 * 1000;
 
   const user = {
     id,
@@ -304,148 +493,137 @@ app.post("/api/auth/register-public", (req, res) => {
     otpExpires,
     createdAt: now,
   };
-  users.push(user);
+
+  db.users.push(user);
+  scheduleSaveDb();
 
   sendOtpEmail(email, otpCode).catch(() => {});
 
   const token = signToken(user);
   res.json({
-    message:
-      "Đăng ký thành công. Đã gửi OTP đến email (hoặc in ở console nếu chưa cấu hình SMTP).",
+    message: "Dang ky thanh cong. Da gui OTP den email (hoac in console).",
     token,
     user: publicUser(user),
   });
 });
 
-// User đổi mật khẩu (self)
+// Change password
 app.post("/api/auth/change-password", authMiddleware, (req, res) => {
   const { oldPassword, newPassword, confirmPassword } = req.body || {};
   const user = req._userObj;
 
   if (!oldPassword || !newPassword || !confirmPassword) {
-    return res.status(400).json({ error: "Thiếu dữ liệu." });
+    return res.status(400).json({ error: "Thieu du lieu." });
   }
   if (!bcrypt.compareSync(oldPassword, user.passwordHash)) {
-    return res.status(400).json({ error: "Mật khẩu hiện tại không đúng" });
+    return res.status(400).json({ error: "Mat khau hien tai khong dung" });
   }
   if (newPassword !== confirmPassword) {
-    return res.status(400).json({ error: "Mật khẩu xác nhận không trùng" });
+    return res.status(400).json({ error: "Mat khau xac nhan khong trung" });
   }
   if (newPassword.length < 6) {
-    return res
-      .status(400)
-      .json({ error: "Mật khẩu mới tối thiểu 6 ký tự" });
+    return res.status(400).json({ error: "Mat khau moi toi thieu 6 ky tu" });
   }
 
   user.passwordHash = bcrypt.hashSync(newPassword, 10);
-  res.json({ message: "Đã đổi mật khẩu" });
+  scheduleSaveDb();
+  res.json({ message: "Da doi mat khau" });
 });
 
-// Gửi lại OTP cho email hiện tại (self)
+// Send OTP
 app.post("/api/auth/send-otp", authMiddleware, (req, res) => {
   const user = req._userObj;
-  if (!user.email) {
-    return res.status(400).json({ error: "User chưa có email" });
-  }
+  if (!user.email) return res.status(400).json({ error: "User chua co email" });
 
   const otpCode = (Math.floor(100000 + Math.random() * 900000)).toString();
   const otpExpires = Date.now() + 15 * 60 * 1000;
 
   user.otpCode = otpCode;
   user.otpExpires = otpExpires;
+  scheduleSaveDb();
 
   sendOtpEmail(user.email, otpCode).catch(() => {});
-  res.json({ message: "Đã gửi lại OTP" });
+  res.json({ message: "Da gui lai OTP" });
 });
 
-// Xác nhận OTP email (self)
+// Verify email
 app.post("/api/auth/verify-email", authMiddleware, (req, res) => {
   const { otp } = req.body || {};
   const user = req._userObj;
 
-  if (!otp) {
-    return res.status(400).json({ error: "Thiếu OTP" });
-  }
+  if (!otp) return res.status(400).json({ error: "Thieu OTP" });
   if (!user.otpCode || !user.otpExpires) {
-    return res.status(400).json({ error: "Chưa có OTP nào đang chờ" });
+    return res.status(400).json({ error: "Chua co OTP nao dang cho" });
   }
   if (Date.now() > user.otpExpires) {
-    return res.status(400).json({ error: "OTP đã hết hạn" });
+    return res.status(400).json({ error: "OTP da het han" });
   }
   if (otp !== user.otpCode) {
-    return res.status(400).json({ error: "OTP không đúng" });
+    return res.status(400).json({ error: "OTP khong dung" });
   }
 
   user.emailVerified = true;
   user.otpCode = null;
   user.otpExpires = null;
+  scheduleSaveDb();
 
-  res.json({
-    message: "Xác nhận email thành công",
-    user: publicUser(user),
-  });
+  res.json({ message: "Xac nhan email thanh cong", user: publicUser(user) });
 });
-// ---- DEVICES ----
 
-// Danh sách device
+// ===== DEVICES =====
 app.get("/api/devices", authMiddleware, (req, res) => {
-  const user = req.user;
-  if (user.role === "admin") {
-    return res.json(devices);
-  }
-  const list = devices.filter(
-    (d) => !d.ownerUserId || d.ownerUserId === user.id
-  );
-  res.json(list);
+  res.json(buildDeviceListForUser(req.user));
 });
 
-// Claim device
+// Claim/register device
 app.post("/api/devices/register", authMiddleware, (req, res) => {
   const { deviceId, name } = req.body || {};
-  if (!deviceId) {
-    return res.status(400).json({ error: "Thiếu deviceId" });
+  if (!deviceId) return res.status(400).json({ error: "Thieu deviceId" });
+
+  const reg = getRegistryDevice(deviceId);
+  if (reg && reg.ownerUserId && reg.ownerUserId !== req.user.id) {
+    return res.status(403).json({ error: "Thiet bi da thuoc ve user khac" });
   }
 
-  let dev = devices.find((d) => d.id === deviceId);
-  if (!dev) {
-    dev = {
-      id: deviceId,
-      name: name || "",
-      ownerUserId: req.user.id,
-      lastState: "UNKNOWN",
-      lastValue: null,
-      sensors: {},
-      updatedAt: new Date().toISOString(),
-    };
-    devices.push(dev);
-  } else {
-    if (dev.ownerUserId && dev.ownerUserId !== req.user.id) {
-      return res
-        .status(403)
-        .json({ error: "Thiết bị đã thuộc về user khác" });
-    }
-    dev.ownerUserId = req.user.id;
-    if (name) dev.name = name;
-  }
+  const dev = upsertRegistryDevice(deviceId, {
+    ownerUserId: req.user.id,
+    name: name || reg?.name || "",
+  });
+
+  // tao runtime neu chua co
+  upsertRuntimeDevice(deviceId, { name: dev.name, state: "UNKNOWN" });
+
   res.json(dev);
 });
 
-// Điều khiển device (MQTT publish)
+// Control device (MQTT publish)
+// Ho tro ca command string va payload object (slider/button/switch)
 app.post("/api/devices/:id/control", authMiddleware, (req, res) => {
   const deviceId = req.params.id;
-  const { command } = req.body || {};
-  if (!command) {
-    return res.status(400).json({ error: "Thiếu command" });
+
+  const reg = getRegistryDevice(deviceId);
+  if (reg && reg.ownerUserId && reg.ownerUserId !== req.user.id && req.user.role !== "admin") {
+    return res.status(403).json({ error: "Khong co quyen dieu khien device nay" });
+  }
+
+  const { command, payload } = req.body || {};
+  const hasCommand = typeof command === "string" && command.length > 0;
+  const hasPayload = payload && typeof payload === "object";
+
+  if (!hasCommand && !hasPayload) {
+    return res.status(400).json({ error: "Thieu command hoac payload" });
   }
 
   const topic = `iot/demo/${deviceId}/control`;
-  const payload = JSON.stringify({
-    command,
+
+  const out = {
     fromUserId: req.user.id,
     ts: Date.now(),
-  });
+    ...(hasCommand ? { command } : {}),
+    ...(hasPayload ? payload : {}),
+  };
 
-  mqttClient.publish(topic, payload, (err) => {
+  mqttClient.publish(topic, JSON.stringify(out), (err) => {
     if (err) {
       console.error("MQTT publish error:", err.message);
       return res.status(500).json({ error: "MQTT publish error" });
@@ -454,156 +632,231 @@ app.post("/api/devices/:id/control", authMiddleware, (req, res) => {
   });
 });
 
-// Xoá device
+// Delete device
 app.delete("/api/devices/:id", authMiddleware, (req, res) => {
   const deviceId = req.params.id;
-  const user = req.user;
 
-  const idx = devices.findIndex((d) => d.id === deviceId);
-  if (idx === -1) {
-    return res.status(404).json({ error: "Device không tồn tại" });
+  const regIdx = db.deviceRegistry.findIndex((d) => d.id === deviceId);
+  if (regIdx === -1) return res.status(404).json({ error: "Device khong ton tai" });
+
+  const reg = db.deviceRegistry[regIdx];
+  if (req.user.role !== "admin" && reg.ownerUserId && reg.ownerUserId !== req.user.id) {
+    return res.status(403).json({ error: "Khong co quyen xoa device nay" });
   }
 
-  const dev = devices[idx];
+  db.deviceRegistry.splice(regIdx, 1);
+  scheduleSaveDb();
 
-  if (user.role !== "admin" && dev.ownerUserId && dev.ownerUserId !== user.id) {
-    return res.status(403).json({ error: "Không có quyền xoá device này" });
-  }
+  const rtIdx = devicesRuntime.findIndex((d) => d.id === deviceId);
+  if (rtIdx !== -1) devicesRuntime.splice(rtIdx, 1);
 
-  devices.splice(idx, 1);
-  res.json({ message: "Đã xoá device", id: deviceId });
+  res.json({ message: "Da xoa device", id: deviceId });
 });
 
-// ---- ADMIN USERS ----
-
-// List user
-app.get("/api/admin/users", authMiddleware, adminOnly, (req, res) => {
-  res.json(users.map(publicUser));
+// ===== CAMERAS =====
+// List cameras (for dropdown)
+app.get("/api/cameras", authMiddleware, (req, res) => {
+  res.json(buildCameraListForUser(req.user));
 });
 
-// Admin đổi mật khẩu user bất kỳ
-app.patch(
-  "/api/admin/users/:id/password",
-  authMiddleware,
-  adminOnly,
-  (req, res) => {
-    const userId = parseInt(req.params.id, 10);
-    const { newPassword } = req.body || {};
+// Claim/register camera (for dropdown)
+app.post("/api/cameras/register", authMiddleware, (req, res) => {
+  const { cameraId, name } = req.body || {};
+  if (!cameraId) return res.status(400).json({ error: "Thieu cameraId" });
 
-    if (!newPassword || newPassword.length < 6) {
-      return res
-        .status(400)
-        .json({ error: "Mật khẩu mới tối thiểu 6 ký tự" });
-    }
-
-    const user = users.find((u) => u.id === userId);
-    if (!user) {
-      return res.status(404).json({ error: "User không tồn tại" });
-    }
-
-    user.passwordHash = bcrypt.hashSync(newPassword, 10);
-    res.json({ message: "Đã đổi mật khẩu cho user", user: publicUser(user) });
-  }
-);
-
-// Admin set/bỏ quyền admin
-app.patch(
-  "/api/admin/users/:id/role",
-  authMiddleware,
-  adminOnly,
-  (req, res) => {
-    const userId = parseInt(req.params.id, 10);
-    const { role } = req.body || {};
-
-    if (!["admin", "user"].includes(role)) {
-      return res.status(400).json({ error: "Role không hợp lệ" });
-    }
-
-    const user = users.find((u) => u.id === userId);
-    if (!user) {
-      return res.status(404).json({ error: "User không tồn tại" });
-    }
-
-    if (user.id === req.user.id && role !== "admin") {
-      return res
-        .status(400)
-        .json({ error: "Không thể tự bỏ quyền admin của chính mình" });
-    }
-
-    user.role = role;
-    res.json({
-      message: "Đã cập nhật role user",
-      user: publicUser(user),
-    });
-  }
-);
-
-// Admin xóa user
-app.delete("/api/admin/users/:id", authMiddleware, adminOnly, (req, res) => {
-  const userId = parseInt(req.params.id, 10);
-
-  const user = users.find((u) => u.id === userId);
-  if (!user) {
-    return res.status(404).json({ error: "User không tồn tại" });
+  const reg = getRegistryCamera(cameraId);
+  if (reg && reg.ownerUserId && reg.ownerUserId !== req.user.id) {
+    return res.status(403).json({ error: "Camera da thuoc ve user khac" });
   }
 
-  const admins = users.filter((u) => u.role === "admin");
-  if (user.role === "admin" && admins.length <= 1) {
-    return res
-      .status(400)
-      .json({ error: "Không thể xóa admin cuối cùng" });
-  }
-  if (user.id === req.user.id) {
-    return res.status(400).json({ error: "Không thể tự xóa chính mình" });
-  }
+  const cam = upsertRegistryCamera(cameraId, {
+    ownerUserId: req.user.id,
+    name: name || reg?.name || "",
+  });
 
-  users = users.filter((u) => u.id !== userId);
-  res.json({ message: "Đã xóa user" });
+  res.json(cam);
 });
 
-// ---- CAMERA (JPEG frames) ----
+// Delete camera
+app.delete("/api/cameras/:id", authMiddleware, (req, res) => {
+  const cameraId = req.params.id;
 
-// ESP32 / Laptop POST frame
+  const idx = db.cameraRegistry.findIndex((c) => c.id === cameraId);
+  if (idx === -1) return res.status(404).json({ error: "Camera khong ton tai" });
+
+  const cam = db.cameraRegistry[idx];
+  if (req.user.role !== "admin" && cam.ownerUserId && cam.ownerUserId !== req.user.id) {
+    return res.status(403).json({ error: "Khong co quyen xoa camera nay" });
+  }
+
+  db.cameraRegistry.splice(idx, 1);
+  scheduleSaveDb();
+
+  cameraFrames.delete(String(cameraId));
+
+  res.json({ message: "Da xoa camera", id: cameraId });
+});
+
+// ===== WIDGETS (SYNC DASHBOARD) =====
+// Luu layout/widgets theo user, de login o may khac van ra dung dashboard
+app.get("/api/widgets", authMiddleware, (req, res) => {
+  const key = String(req.user.id);
+  const data = db.widgetsByUser[key] || [];
+  res.json(data);
+});
+
+app.put("/api/widgets", authMiddleware, (req, res) => {
+  const key = String(req.user.id);
+  const widgets = req.body;
+
+  // toi thieu: phai la array hoac object
+  const ok =
+    Array.isArray(widgets) || (widgets && typeof widgets === "object");
+
+  if (!ok) return res.status(400).json({ error: "Widgets data khong hop le" });
+
+  db.widgetsByUser[key] = widgets;
+  scheduleSaveDb();
+  res.json({ ok: true });
+});
+
+// ===== OPTIONS (CHO DROPDOWN DEVICE ID + CAMERA ID) =====
+app.get("/api/options", authMiddleware, (req, res) => {
+  const deviceList = buildDeviceListForUser(req.user).map((d) => ({
+    id: d.id,
+    name: d.name || d.id,
+    ownerUserId: d.ownerUserId || null,
+  }));
+
+  const cameraList = buildCameraListForUser(req.user).map((c) => ({
+    id: c.id,
+    name: c.name || c.id,
+    ownerUserId: c.ownerUserId || null,
+  }));
+
+  res.json({ devices: deviceList, cameras: cameraList });
+});
+
+// ===== CAMERA FRAMES =====
+// POST JPEG frame: gui kem cameraId bang query hoac header
+// - query: /api/camera/frame?cameraId=cam1
+// - header: x-camera-id: cam1
 app.post("/api/camera/frame", authMiddleware, jpegParser, (req, res) => {
   if (!req.body || !req.body.length) {
     return res.status(400).json({ error: "Empty body" });
   }
 
-  const userId = String(req.user.id);
-  const buffer = Buffer.from(req.body);
+  const cameraId =
+    (req.query.cameraId && String(req.query.cameraId)) ||
+    (req.headers["x-camera-id"] && String(req.headers["x-camera-id"])) ||
+    // fallback: dung userId nhu code cu
+    String(req.user.id);
 
-  cameraFrames.set(userId, {
-    buffer,
+  // auto tao camera registry neu chua co (de camera widget de thoi la chay)
+  const reg = getRegistryCamera(cameraId);
+  if (reg && reg.ownerUserId && reg.ownerUserId !== req.user.id) {
+    return res.status(403).json({ error: "CameraId dang thuoc user khac" });
+  }
+  if (!reg) {
+    upsertRegistryCamera(cameraId, {
+      ownerUserId: req.user.id,
+      name: "",
+    });
+  } else if (!reg.ownerUserId) {
+    // neu chua owner thi gan owner
+    upsertRegistryCamera(cameraId, { ownerUserId: req.user.id });
+  }
+
+  cameraFrames.set(String(cameraId), {
+    buffer: Buffer.from(req.body),
     contentType: "image/jpeg",
     updatedAt: Date.now(),
   });
 
-  res.json({ ok: true });
+  res.json({ ok: true, cameraId });
 });
 
-// GET latest frame theo userId
-app.get("/api/camera/latest/:userId", (req, res) => {
-  const userId = String(req.params.userId);
-  const entry = cameraFrames.get(userId);
-  if (!entry) {
-    return res.status(404).json({ error: "No frame" });
-  }
+// GET latest frame theo cameraId (public de <img src> chay thang)
+app.get("/api/camera/latest/:cameraId", (req, res) => {
+  const cameraId = String(req.params.cameraId);
+  const entry = cameraFrames.get(cameraId);
+  if (!entry) return res.status(404).json({ error: "No frame" });
+
   res.setHeader("Content-Type", entry.contentType);
   res.setHeader("Cache-Control", "no-store");
   res.send(entry.buffer);
 });
-// ---- STATIC / FRONTEND ----
-const FRONTEND_DIR = path.join(__dirname, "..", "frontend");
 
-// serve luôn các file tĩnh: css, js, ảnh,...
+// ===== ADMIN USERS =====
+app.get("/api/admin/users", authMiddleware, adminOnly, (req, res) => {
+  res.json(db.users.map(publicUser));
+});
+
+app.patch("/api/admin/users/:id/password", authMiddleware, adminOnly, (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+  const { newPassword } = req.body || {};
+
+  if (!newPassword || newPassword.length < 6) {
+    return res.status(400).json({ error: "Mat khau moi toi thieu 6 ky tu" });
+  }
+
+  const user = db.users.find((u) => u.id === userId);
+  if (!user) return res.status(404).json({ error: "User khong ton tai" });
+
+  user.passwordHash = bcrypt.hashSync(newPassword, 10);
+  scheduleSaveDb();
+  res.json({ message: "Da doi mat khau cho user", user: publicUser(user) });
+});
+
+app.patch("/api/admin/users/:id/role", authMiddleware, adminOnly, (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+  const { role } = req.body || {};
+
+  if (!["admin", "user"].includes(role)) {
+    return res.status(400).json({ error: "Role khong hop le" });
+  }
+
+  const user = db.users.find((u) => u.id === userId);
+  if (!user) return res.status(404).json({ error: "User khong ton tai" });
+
+  if (user.id === req.user.id && role !== "admin") {
+    return res.status(400).json({ error: "Khong the tu bo quyen admin" });
+  }
+
+  user.role = role;
+  scheduleSaveDb();
+  res.json({ message: "Da cap nhat role user", user: publicUser(user) });
+});
+
+app.delete("/api/admin/users/:id", authMiddleware, adminOnly, (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+
+  const user = db.users.find((u) => u.id === userId);
+  if (!user) return res.status(404).json({ error: "User khong ton tai" });
+
+  const admins = db.users.filter((u) => u.role === "admin");
+  if (user.role === "admin" && admins.length <= 1) {
+    return res.status(400).json({ error: "Khong the xoa admin cuoi cung" });
+  }
+  if (user.id === req.user.id) {
+    return res.status(400).json({ error: "Khong the tu xoa chinh minh" });
+  }
+
+  db.users = db.users.filter((u) => u.id !== userId);
+  scheduleSaveDb();
+  res.json({ message: "Da xoa user" });
+});
+
+// ===== STATIC / FRONTEND =====
+const FRONTEND_DIR = path.join(__dirname, "..", "frontend");
 app.use(express.static(FRONTEND_DIR));
 
-// route chính trả về index.html
 app.get("/", (req, res) => {
   res.sendFile(path.join(FRONTEND_DIR, "index.html"));
 });
 
-// ===== START SERVER =====
+// ===== START =====
 app.listen(PORT, () => {
   console.log(`Backend running at http://localhost:${PORT}`);
+  console.log(`DB file: ${DB_FILE}`);
 });

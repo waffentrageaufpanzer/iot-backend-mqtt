@@ -151,6 +151,41 @@ const widgetConfigRangeMin = document.getElementById("widgetConfigRangeMin");
 const widgetConfigRangeMax = document.getElementById("widgetConfigRangeMax");
 /* NEW: size selector */
 const widgetConfigSize = document.getElementById("widgetConfigSize");
+const widgetConfigCameraRow = document.getElementById("widgetConfigCameraRow");
+const widgetConfigCamera = document.getElementById("widgetConfigCamera");
+
+function refreshWidgetConfigOptions() {
+  // fill device list
+  if (widgetConfigDevice) {
+    const cur = widgetConfigDevice.value || "";
+    widgetConfigDevice.innerHTML = `<option value="">-- Chọn device --</option>`;
+    lastDevices.forEach((d) => {
+      const id = String(d.id);
+      const name = d.name ? ` · ${d.name}` : "";
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = id + name;
+      widgetConfigDevice.appendChild(opt);
+    });
+    widgetConfigDevice.value = cur;
+  }
+
+  // fill camera list
+  if (widgetConfigCamera) {
+    const cur = widgetConfigCamera.value || "";
+    widgetConfigCamera.innerHTML = `<option value="">-- Chọn camera --</option>`;
+    cameras.forEach((c) => {
+      const id = String(c.id);
+      const name = c.name ? ` · ${c.name}` : "";
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = id + name;
+      widgetConfigCamera.appendChild(opt);
+    });
+    widgetConfigCamera.value = cur;
+  }
+}
+
 
 /* STATE */
 let autoRefresh = false;
@@ -168,6 +203,184 @@ let widgetIdCounter = 0;
 let selectedWidgetId = null;
 let widgetsRunning = false;
 let lastActivity = Date.now();
+let savePrefsTimer = null;
+
+async function loadPrefsFromBackend() {
+  if (!token) return;
+
+  try {
+    const res = await fetch(API_BASE + "/api/me/prefs", {
+      headers: { Authorization: "Bearer " + token },
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+
+    widgets = Array.isArray(data.widgets) ? data.widgets : [];
+    cameras = Array.isArray(data.cameras) ? data.cameras : [];
+
+    renderCameras(cameras);
+    renderWidgets();
+    refreshWidgetConfigOptions(); // để dropdown device/camera cập nhật
+  } catch (e) {
+    console.warn("loadPrefsFromBackend failed:", e);
+  }
+}
+
+function scheduleSavePrefs() {
+  if (!token) return;
+  if (savePrefsTimer) clearTimeout(savePrefsTimer);
+  savePrefsTimer = setTimeout(async () => {
+    try {
+      await fetch(API_BASE + "/api/me/prefs", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + token,
+        },
+        body: JSON.stringify({ widgets, cameras }),
+      });
+    } catch (e) {
+      console.warn("save prefs failed:", e);
+    }
+  }, 400); // debounce
+}
+
+/* =========================
+   DASHBOARD GRID DRAG (EDIT MODE)
+========================= */
+const GRID_COLS = 12;
+const GRID_ROW_PX = 90;
+const SIZE_TO_COLSPAN = { s: 3, m: 4, l: 6 };
+const TYPE_TO_ROWSPAN = {
+  button: 2,
+  switch: 2,
+  slider: 2,
+  thermo: 2,
+  gauge: 2,
+  dpad: 3,
+  camera: 4,
+  default: 2,
+};
+
+function getColSpan(w) {
+  return SIZE_TO_COLSPAN[w.size] || 4;
+}
+function getRowSpan(w) {
+  return w.h || TYPE_TO_ROWSPAN[w.type] || TYPE_TO_ROWSPAN.default;
+}
+function clampWidgetPos(w) {
+  const cs = getColSpan(w);
+  const rs = getRowSpan(w);
+  if (typeof w.x !== "number") w.x = 1;
+  if (typeof w.y !== "number") w.y = 1;
+  w.x = Math.max(1, Math.min(GRID_COLS - cs + 1, w.x));
+  w.y = Math.max(1, w.y);
+  w.h = rs;
+}
+
+function isCollide(a, b) {
+  const aw = getColSpan(a), ah = getRowSpan(a);
+  const bw = getColSpan(b), bh = getRowSpan(b);
+  const aL = a.x, aR = a.x + aw - 1, aT = a.y, aB = a.y + ah - 1;
+  const bL = b.x, bR = b.x + bw - 1, bT = b.y, bB = b.y + bh - 1;
+  return !(aR < bL || aL > bR || aB < bT || aT > bB);
+}
+
+function resolveWidgetLayout() {
+  // đặt theo thứ tự y rồi x để dễ “đẩy xuống” khi đụng nhau
+  const sorted = [...widgets].sort((p, q) => (p.y || 1) - (q.y || 1) || (p.x || 1) - (q.x || 1));
+  for (const w of sorted) {
+    clampWidgetPos(w);
+    let safe = 0;
+    while (sorted.some((o) => o !== w && isCollide(w, o))) {
+      w.y += 1;
+      safe += 1;
+      if (safe > 500) break; // tránh loop vô hạn
+    }
+  }
+}
+
+let dragState = null;
+
+function gridPointFromClient(clientX, clientY, colSpan) {
+  const grid = widgetGrid;
+  const rect = grid.getBoundingClientRect();
+  const colW = rect.width / GRID_COLS;
+
+  const xRaw = Math.floor((clientX - rect.left) / colW) + 1;
+  const pageY = clientY + window.scrollY;
+  const gridTopPage = rect.top + window.scrollY;
+  const yRaw = Math.floor((pageY - gridTopPage) / GRID_ROW_PX) + 1;
+
+  const x = Math.max(1, Math.min(GRID_COLS - colSpan + 1, xRaw));
+  const y = Math.max(1, yRaw);
+  return { x, y };
+}
+
+function startWidgetDrag(w, card, e) {
+  if (widgetsRunning) return; // chỉ drag khi edit
+  if (!widgetGrid) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  clampWidgetPos(w);
+
+  const colSpan = getColSpan(w);
+  const rowSpan = getRowSpan(w);
+
+  const placeholder = document.createElement("div");
+  placeholder.className = "widget-placeholder";
+  placeholder.style.gridColumn = `${w.x} / span ${colSpan}`;
+  placeholder.style.gridRow = `${w.y} / span ${rowSpan}`;
+  widgetGrid.appendChild(placeholder);
+
+  card.classList.add("dragging");
+  card.setPointerCapture?.(e.pointerId);
+
+  dragState = {
+    id: w.id,
+    widget: w,
+    card,
+    placeholder,
+    colSpan,
+    rowSpan,
+  };
+
+  const move = (ev) => {
+    if (!dragState) return;
+    const pt = gridPointFromClient(ev.clientX, ev.clientY, dragState.colSpan);
+    dragState.placeholder.style.gridColumn = `${pt.x} / span ${dragState.colSpan}`;
+    dragState.placeholder.style.gridRow = `${pt.y} / span ${dragState.rowSpan}`;
+
+    // auto scroll nhẹ khi kéo gần mép dưới
+    const viewH = window.innerHeight;
+    if (ev.clientY > viewH - 80) window.scrollBy({ top: 18, behavior: "instant" });
+    if (ev.clientY < 80) window.scrollBy({ top: -18, behavior: "instant" });
+  };
+
+  const up = (ev) => {
+    if (!dragState) return;
+
+    const pt = gridPointFromClient(ev.clientX, ev.clientY, dragState.colSpan);
+    dragState.widget.x = pt.x;
+    dragState.widget.y = pt.y;
+    clampWidgetPos(dragState.widget);
+
+    dragState.placeholder.remove();
+    dragState.card.classList.remove("dragging");
+
+    resolveWidgetLayout();
+    renderWidgets();
+
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    dragState = null;
+  };
+
+  window.addEventListener("pointermove", move, { passive: false });
+  window.addEventListener("pointerup", up, { passive: false });
+}
 
 /* THEME + LANG */
 function setTheme(theme) {
@@ -309,6 +522,7 @@ loginBtn.onclick = async () => {
     loadCamerasFromLocal();
     renderCameras(cameras);
     fetchAll();
+    await loadPrefsFromBackend();
   } catch (err) {
     authMessage.textContent = "Login error: " + err.message;
   }
@@ -467,6 +681,13 @@ changePassBtn.onclick = async () => {
 
 /* NAV */
 function showTab(tab) {
+  if (tab === "dashboard") {
+  renderWidgets();
+  if (widgetsRunning) startWidgetLiveSync();
+  else stopWidgetLiveSync();
+} else {
+  stopWidgetLiveSync();
+}
   navButtons.forEach((btn) => {
     const t = btn.getAttribute("data-tab");
     if (t === tab) btn.classList.add("active");
@@ -1219,6 +1440,25 @@ function renderAdminUsers(users) {
     adminUserTableBody.appendChild(tr);
   });
 }
+let widgetLiveTimer = null;
+
+function startWidgetLiveSync() {
+  if (widgetLiveTimer) return;
+  widgetLiveTimer = setInterval(async () => {
+    if (!token) return;
+    try {
+      const devices = await fetchDevices();
+      lastDevices = devices;
+      renderWidgets();
+      refreshWidgetConfigOptions();
+    } catch {}
+  }, 2000);
+}
+
+function stopWidgetLiveSync() {
+  if (widgetLiveTimer) clearInterval(widgetLiveTimer);
+  widgetLiveTimer = null;
+}
 
 /* ===== DASHBOARD WIDGETS (session only) ===== */
 function getWidgetValue(w, dev) {
@@ -1298,6 +1538,15 @@ function selectWidget(id, { openConfig = false } = {}) {
 }
 
 function updateWidgetConfig(w) {
+  refreshWidgetConfigOptions();
+    const isCameraWidget = w.type === "camera";
+    if (widgetConfigCameraRow) widgetConfigCameraRow.style.display = isCameraWidget ? "flex" : "none";
+
+    if (isCameraWidget) {
+      if (widgetConfigCamera) widgetConfigCamera.value = w.cameraId || "";
+    } else {
+      if (widgetConfigDevice) widgetConfigDevice.value = w.deviceId || "";
+    }
   if (!widgetConfigPanel || !widgetConfigOverlay) return;
   if (!w) {
     widgetConfigOverlay.classList.remove("open");
@@ -1399,6 +1648,8 @@ function renderWidgets() {
 
   widgetGrid.innerHTML = "";
   widgetGrid.classList.toggle("widgets-running", widgetsRunning);
+  widgetGrid.classList.toggle("widgets-edit", !widgetsRunning);
+  document.body.classList.toggle("dash-edit-mode", !widgetsRunning && dashboardSection.style.display !== "none");
 
   if (!widgets.length) {
     const d = document.createElement("div");
@@ -1533,14 +1784,27 @@ function renderWidgets() {
 
     // ===== SWITCH: FIX label ON/OFF =====
     const isSwitchOn = w.type === "switch" ? getSwitchState(w, dev) : false;
+      // edit mode: đặt vị trí theo ô
+if (!widgetsRunning) {
+  clampWidgetPos(w);
+  const cs = getColSpan(w);
+  const rs = getRowSpan(w);
+  card.style.gridColumn = `${w.x} / span ${cs}`;
+  card.style.gridRow = `${w.y} / span ${rs}`;
+} else {
+  card.style.gridColumn = "";
+  card.style.gridRow = "";
+}
 
     card.innerHTML = `
       <div class="widget-header">
         <span class="widget-title" title="${label + devLabel}">${label}${devLabel}</span>
         <div style="display:flex;gap:4px;align-items:center;">
           <span class="widget-tag">${tagText}</span>
+          <button type="button" class="icon-btn btn-sm widget-drag-handle" title="Kéo thả">⠿</button>
           <button type="button" class="icon-btn btn-sm widget-config-btn">⚙</button>
           <button type="button" class="icon-btn btn-sm widget-remove">✕</button>
+
         </div>
       </div>
       <div class="widget-body">
@@ -1579,6 +1843,10 @@ function renderWidgets() {
       e.stopPropagation();
       selectWidget(w.id, { openConfig: true });
     };
+    const dragHandle = card.querySelector(".widget-drag-handle");
+    if (dragHandle) {
+      dragHandle.onpointerdown = (e) => startWidgetDrag(w, card, e);
+    }
 
     // ===== switch click: optimistic update =====
     if (w.type === "switch") {
@@ -1738,12 +2006,15 @@ if (type === "button") {
 if (dashModeBtn) {
   dashModeBtn.onclick = () => {
     widgetsRunning = !widgetsRunning;
-    dashModeBtn.textContent = widgetsRunning ? "Run" : "Edit";
+    dashModeBtn.textContent = widgetsRunning ? "Edit" : "Run";
     renderWidgets();
+    if (widgetsRunning) startWidgetLiveSync();
+    else stopWidgetLiveSync();
   };
 }
 
 /* config inputs -> widget state */
+
 if (widgetConfigTitle) {
   widgetConfigTitle.addEventListener("input", () => {
     if (!selectedWidgetId) return;
@@ -1754,12 +2025,24 @@ if (widgetConfigTitle) {
   });
 }
 if (widgetConfigDevice) {
-  widgetConfigDevice.addEventListener("input", () => {
+  widgetConfigDevice.addEventListener("change", () => {
     if (!selectedWidgetId) return;
     const w = widgets.find((x) => x.id === selectedWidgetId);
     if (!w) return;
-    w.deviceId = widgetConfigDevice.value.trim();
+    w.deviceId = widgetConfigDevice.value || "";
     syncWidgetCard(w);
+    scheduleSavePrefs();
+  });
+}
+
+if (widgetConfigCamera) {
+  widgetConfigCamera.addEventListener("change", () => {
+    if (!selectedWidgetId) return;
+    const w = widgets.find((x) => x.id === selectedWidgetId);
+    if (!w) return;
+    w.cameraId = widgetConfigCamera.value || "";
+    syncWidgetCard(w);
+    scheduleSavePrefs();
   });
 }
 if (widgetConfigSensor) {

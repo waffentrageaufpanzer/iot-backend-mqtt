@@ -1482,3 +1482,79 @@ body[data-theme="light"] select option {
   transform: translateY(1px) scale(0.99);
   filter: brightness(1.05);
 }
+/* =========================
+   DASHBOARD FULL HEIGHT + EDIT CANVAS GRID
+========================= */
+:root {
+  --grid-cols: 12;
+  --grid-row: 90px; /* chiều cao 1 ô khi edit mode */
+  --grid-line-dark: rgba(148, 163, 184, 0.10);
+  --grid-line-light: rgba(249, 115, 22, 0.20); /* cam cho light mode */
+}
+
+/* dashboard luôn “dài tới cuối trang” */
+.widget-layout {
+  min-height: calc(100vh - 170px);
+}
+
+.widget-grid {
+  min-height: calc(100vh - 210px);
+}
+
+/* edit mode: canvas full width + hide panel bên phải cho rộng */
+body.dash-edit-mode .layout {
+  grid-template-columns: 56px minmax(0, 1fr);
+}
+
+body.dash-edit-mode .detail-card {
+  display: none !important;
+}
+
+/* edit mode: bật nền kẻ ô + fixed row height để snap theo ô */
+.widget-grid.widgets-edit {
+  grid-auto-rows: var(--grid-row);
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px dashed rgba(148, 163, 184, 0.45);
+
+  background-image:
+    linear-gradient(to right, var(--grid-line-dark) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line-dark) 1px, transparent 1px);
+
+  background-size: calc(100% / var(--grid-cols)) var(--grid-row);
+  background-position: 0 0;
+}
+
+/* drag handle chỉ hiện khi edit */
+.widget-drag-handle {
+  display: none;
+  cursor: grab;
+  user-select: none;
+}
+
+.widgets-edit .widget-drag-handle {
+  display: inline-flex;
+}
+
+.widget-card.dragging {
+  opacity: 0.25;
+}
+
+.widget-placeholder {
+  border-radius: 14px;
+  border: 2px dashed rgba(56, 189, 248, 0.85);
+  background: rgba(56, 189, 248, 0.06);
+}
+
+/* Light theme: muốn sáng + viền cam cho đẹp */
+body[data-theme="light"] .widget-grid.widgets-edit {
+  border-color: rgba(249, 115, 22, 0.75);
+  background-image:
+    linear-gradient(to right, var(--grid-line-light) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line-light) 1px, transparent 1px);
+}
+
+body[data-theme="light"] .widget-card.widget-selected {
+  box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.85),
+    0 0 18px rgba(249, 115, 22, 0.25);
+}
