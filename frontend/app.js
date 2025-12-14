@@ -15,7 +15,7 @@ const S = {
     token: localStorage.getItem("iot_token"),
     user: JSON.parse(localStorage.getItem("iot_user") || "null"),
     devices: [], cameras: [], widgets: [], 
-    theme: localStorage.getItem("iot_theme") || "dark",
+    theme: localStorage.getItem("iot_theme") || "light", // Mặc định Light cho đẹp
     editMode: false,
     selW: null, // Widget đang được chọn để sửa
     timers: { auto: null, stream: null, pull: null }
@@ -41,7 +41,25 @@ async function api(path, method = "GET", body = null) {
 
 // Helper tính toán giao diện
 const getColSpan = (s) => s === 's' ? 3 : s === 'l' ? 6 : 4; 
-const getVal = (w, d) => d ? (d.sensors?.[w.sensorKey] ?? d.lastValue) : 0;
+
+// --- LOGIC CÔNG THỨC (QUAN TRỌNG: Xử lý LM35, I2C tại đây) ---
+const getVal = (w, d) => {
+    if (!d) return 0;
+    // 1. Lấy giá trị thô (Raw) từ ESP32 gửi lên
+    let raw = d.sensors?.[w.sensorKey] ?? d.lastValue ?? 0;
+    
+    // 2. Nếu người dùng có nhập công thức, tính toán ngay tại trình duyệt
+    if (w.formula && w.formula.trim() !== "") {
+        try {
+            // x là biến đại diện cho giá trị raw
+            const calc = new Function('x', `return ${w.formula}`);
+            return parseFloat(calc(raw)).toFixed(2);
+        } catch (e) {
+            return raw; 
+        }
+    }
+    return raw;
+};
 
 /* =========================================
    2. AUTH & INIT (ĐĂNG NHẬP & KHỞI TẠO)
@@ -50,11 +68,18 @@ function renderApp() {
     if (S.token) {
         $("#authPage").style.display = "none";
         $("#appPage").style.display = "block";
-        $("#userBadge").textContent = `${S.user.username} (${S.user.role})`;
+        $("#userBadge").textContent = `${S.user.username}`;
         
-        // Chỉ hiện tab Admin nếu là admin
+        // --- BẢO MẬT GIAO DIỆN ---
+        // Ẩn tab Admin nếu không phải admin
         const adminTab = $("#navAdmin");
-        if(adminTab) adminTab.style.display = S.user.role === 'admin' ? 'flex' : 'none';
+        const adminSection = $("#adminSection");
+        if (S.user.role !== 'admin') {
+            if(adminTab) adminTab.style.display = 'none';
+            if(adminSection) adminSection.style.display = 'none';
+        } else {
+            if(adminTab) adminTab.style.display = 'flex';
+        }
         
         loadAllData();
         startAutoRefresh();
@@ -69,13 +94,13 @@ function renderApp() {
 // Sự kiện Auth
 on($("#loginBtn"), "click", async () => {
     const res = await api("/api/auth/login", "POST", { username: val("#loginUser"), password: val("#loginPass") });
-    if(res) saveSession(res); else alert("Đăng nhập thất bại");
+    if(res) saveSession(res); else alert("Sai tài khoản hoặc mật khẩu");
 });
 on($("#registerBtn"), "click", async () => {
     const res = await api("/api/auth/register-public", "POST", { 
         username: val("#regUser"), email: val("#regEmail"), password: val("#regPass"), confirmPassword: val("#regPassConfirm") 
     });
-    if(res) { saveSession(res); alert("Đăng ký thành công! OTP đã gửi."); }
+    if(res) { saveSession(res); alert("Đăng ký thành công! Đã tự động đăng nhập."); }
 });
 on($("#verifyOtpBtn"), "click", async () => {
     const res = await api("/api/auth/verify-email", "POST", { otp: val("#otpInput") });
@@ -84,8 +109,7 @@ on($("#verifyOtpBtn"), "click", async () => {
 on($("#logoutBtn"), "click", logout);
 on($("#saveApiBaseBtn"), "click", () => {
     localStorage.setItem("iot_api_base", API_BASE = val("#apiBaseInput"));
-    alert("Đã lưu API Base. Reload trang.");
-    location.reload();
+    alert("Đã lưu. Reload trang."); location.reload();
 });
 on($("#toggleApiBaseBtn"), "click", () => {
     const row = $("#apiBaseRow");
@@ -103,24 +127,17 @@ function logout() { localStorage.clear(); location.reload(); }
    3. DATA LOADING (TẢI DỮ LIỆU)
    ========================================= */
 async function loadAllData() {
-    // Tải song song Widget, Device, Camera
     const [prefs, devs, cams] = await Promise.all([
         api("/api/me/prefs"), 
         api("/api/devices"), 
         api("/api/cameras")
     ]);
-    
     if(prefs) {
         S.widgets = prefs.widgets || [];
-        // Ưu tiên camera trong prefs, nếu không có thì dùng danh sách gốc
         S.cameras = (prefs.cameras && prefs.cameras.length) ? prefs.cameras : (cams || []);
     }
     if(devs) S.devices = devs;
-    
-    renderDevices();
-    renderCameras();
-    renderWidgets();
-    fillOptions(); // Điền data vào dropdown config
+    renderDevices(); renderCameras(); renderWidgets(); fillOptions();
 }
 
 function startAutoRefresh() {
@@ -130,14 +147,13 @@ function startAutoRefresh() {
         const devs = await api("/api/devices");
         if(devs) { 
             S.devices = devs; 
-            // Chỉ render lại widget (để cập nhật giá trị) chứ không render lại toàn bộ DOM tránh lag
             refreshWidgetValues(); 
-            renderDevices(); // Update bảng thiết bị
+            renderDevices(); 
         }
     }, 3000);
 }
 
-// Cập nhật giá trị widget mà không vẽ lại HTML (Tối ưu performance)
+// Cập nhật giá trị (Không render lại HTML để tối ưu)
 function refreshWidgetValues() {
     S.widgets.forEach(w => {
         const card = $(`.widget-card[data-id="${w.id}"]`);
@@ -146,74 +162,68 @@ function refreshWidgetValues() {
         const dev = S.devices.find(d => d.id == w.deviceId);
         const val = getVal(w, dev);
         
-        // Cập nhật tag status
         const tag = card.querySelector(".widget-tag");
-        if(tag) tag.textContent = dev ? dev.lastState : 'NO DATA';
+        if(tag) tag.textContent = dev ? dev.lastState : '--';
 
-        // Cập nhật giá trị hiển thị (tùy loại widget)
-        if(w.type === 'thermo' || w.type === 'gauge') {
-            // Thermo/Gauge cần render lại để thanh màu chạy
-            card.querySelector(".widget-body").innerHTML = W_HTML[w.type](w, val);
-        } else if (w.type === 'slider') {
-            // Slider chỉ cần update số, không update input để tránh mất focus khi đang kéo
-            const label = card.querySelector("span");
-            if(label) label.textContent = val || 0;
-        } else if (w.type === 'switch') {
+        if(w.type === 'switch') {
              const btn = card.querySelector(".widget-switch-btn");
              if(btn) {
                  const isOn = val === true || val === 1 || String(val).toLowerCase() === 'on';
-                 btn.className = `widget-switch-btn widget-control ${isOn?'on':'off'}`;
-                 btn.querySelector(".widget-switch-label").textContent = isOn ? "ON" : "OFF";
+                 if(isOn) btn.classList.add('on'); else btn.classList.remove('on');
              }
+        } else if (w.type === 'slider') {
+            const span = card.querySelector(".widget-slider-row span");
+            if(span) span.textContent = val || 0;
+        } else if (w.type === 'thermo' || w.type === 'gauge') {
+            card.querySelector(".widget-body").innerHTML = W_HTML[w.type](w, val);
         }
     });
 }
 
 /* =========================================
-   4. DASHBOARD & WIDGETS
+   4. DASHBOARD & WIDGETS (GIAO DIỆN ĐẸP)
    ========================================= */
-// Template HTML (Factory Pattern)
 const W_HTML = {
+    // Switch: Nút tròn nổi (Neumorphism)
     switch: (w, v) => {
         const isOn = v === true || v === 1 || String(v).toLowerCase() === 'on';
-        return `<button class="widget-switch-btn ${isOn?'on':'off'}" onclick="ctrl('${w.deviceId}', {command:'toggle'})">
-            <span class="widget-switch-track"><span class="widget-switch-thumb"></span></span>
-            <span class="widget-switch-label">${isOn?'ON':'OFF'}</span>
+        return `<button class="widget-switch-btn ${isOn?'on':''}" onclick="ctrl('${w.deviceId}', {command:'toggle'})">
+            <span style="font-size:24px; color:${isOn?'var(--accent)':'inherit'}">⏻</span>
         </button>`;
     },
-    slider: (w, v) => `<div class="widget-slider-row"><input type="range" min="${w.min}" max="${w.max}" value="${v||0}" onchange="ctrl('${w.deviceId}', {command:'analog', value: Number(this.value)})"><span>${v||0}</span></div>`,
-    button: (w) => `<button class="widget-action-btn" onclick="ctrl('${w.deviceId}', {command:'${w.sensorKey||'btn'}', action:'press'})"><span class="widget-action-dot"></span><span>${w.label||'PRESS'}</span></button>`,
-    thermo: (w, v) => {
-        const pct = Math.min(((v||0)/w.max)*100, 100);
-        return `<div class="widget-thermo" style="--thermo-level:${pct}%"><div class="thermo-icon"><div class="thermo-mercury"></div><div class="thermo-bulb"></div></div><div class="widget-value-big">${v||0}°C</div></div>`;
-    },
-    gauge: (w, v) => {
-        const pct = Math.min(((v||0)/w.max)*100, 100);
-        return `<div class="widget-value-big">${v||0}</div><div class="widget-gauge-bar"><div class="widget-gauge-fill" style="width:${pct}%"></div></div>`;
-    },
+    // Slider
+    slider: (w, v) => `<div class="widget-slider-row"><input type="range" min="${w.min}" max="${w.max}" value="${v||0}" onchange="ctrl('${w.deviceId}', {command:'analog', value: Number(this.value)})"><span style="font-weight:bold">${v||0}</span></div>`,
+    // Button: Nút nhấn nhả
+    button: (w) => `<button class="widget-action-btn" onmousedown="ctrl('${w.deviceId}', {command:'${w.sensorKey||'btn'}', action:'press'})"><span class="widget-action-dot"></span><span>PRESS</span></button>`,
+    // Thermo: Chữ to
+    thermo: (w, v) => `<div class="widget-value-big" style="color:var(--danger)">${v||0}°C</div>`,
+    // Gauge: Chữ to
+    gauge: (w, v) => `<div class="widget-value-big" style="color:var(--accent-2)">${v||0}</div>`,
+    // Dpad
     dpad: (w) => `<div class="widget-dpad"><div class="widget-dpad-row"><button class="dpad-btn" onclick="ctrl('${w.deviceId}', {command:'move', dir:'up'})">↑</button></div><div class="widget-dpad-row"><button class="dpad-btn" onclick="ctrl('${w.deviceId}', {command:'move', dir:'left'})">←</button><button class="dpad-btn" onclick="ctrl('${w.deviceId}', {command:'move', dir:'center'})">⏺</button><button class="dpad-btn" onclick="ctrl('${w.deviceId}', {command:'move', dir:'right'})">→</button></div><div class="widget-dpad-row"><button class="dpad-btn" onclick="ctrl('${w.deviceId}', {command:'move', dir:'down'})">↓</button></div></div>`,
-    camera: (w) => `<img src="${S.cameras.find(c=>c.id==w.cameraId)?.snapshotUrl || ''}" style="width:100%;height:140px;object-fit:cover;border-radius:8px;">`
+    // Camera
+    camera: (w) => `<img src="${S.cameras.find(c=>c.id==w.cameraId)?.snapshotUrl || ''}" class="cam-preview" style="height:90px; object-fit:cover;">`
 };
 
 function renderWidgets() {
     const grid = $("#widgetGrid");
-    // Nếu đang edit mode thì vẽ lại toàn bộ, nếu không thì chỉ vẽ lần đầu hoặc khi đổi cấu trúc
-    // Ở đây vẽ lại luôn cho đơn giản
     grid.innerHTML = S.widgets.map(w => {
         const dev = S.devices.find(d => d.id == w.deviceId);
         const val = getVal(w, dev);
         
         return `
         <div class="widget-card widget-size-${w.size} widget-theme-${w.theme}" 
-             style="grid-column: ${w.x} / span ${getColSpan(w.size)}; grid-row: ${w.y} / span ${w.type==='camera'?4:2}"
+             style="grid-column: span ${getColSpan(w.size)}; grid-row: span ${w.type==='camera'?4:2}"
              data-id="${w.id}">
             <div class="widget-header">
-                <span class="widget-title">${w.label || w.type} ${dev ? '· '+dev.id : ''}</span>
+                <span class="widget-title">${w.label || w.type}</span>
                 <div style="display:flex; gap:4px">
-                    <span class="widget-tag">${dev?.lastState || (w.type==='camera'?'CAM':'--')}</span>
+                    <span class="widget-tag">${dev?.lastState || '--'}</span>
+                    ${S.editMode ? `
                     <button class="icon-btn btn-sm widget-drag-handle" title="Drag">⠿</button>
                     <button class="icon-btn btn-sm" onclick="editWidget('${w.id}')">⚙</button>
-                    <button class="icon-btn btn-sm" onclick="delWidget('${w.id}')">✕</button>
+                    <button class="icon-btn btn-sm" onclick="delWidget('${w.id}')" style="color:var(--danger)">✕</button>
+                    ` : ''}
                 </div>
             </div>
             <div class="widget-body">
@@ -223,7 +233,6 @@ function renderWidgets() {
     }).join("");
 
     if(S.editMode) {
-        // Gắn sự kiện kéo thả cho icon handle
         $$(".widget-drag-handle").forEach(h => h.onmousedown = (e) => initDrag(e, h.closest(".widget-card")));
     }
 }
@@ -231,9 +240,8 @@ function renderWidgets() {
 /* ==== 5. EDIT MODE & DRAG DROP ==== */
 on($("#dashModeBtn"), "click", () => {
     S.editMode = !S.editMode;
-    $("#dashModeBtn").textContent = S.editMode ? "Run Mode" : "Edit Mode";
+    $("#dashModeBtn").textContent = S.editMode ? "Done" : "Edit Mode";
     $("#widgetGrid").classList.toggle("widgets-edit", S.editMode);
-    // Khi bật edit mode thì render lại để hiện nút drag
     renderWidgets();
 });
 
@@ -241,27 +249,19 @@ function initDrag(e, card) {
     e.preventDefault();
     const w = S.widgets.find(x => x.id == card.dataset.id);
     if(!w) return;
-
     const move = (ev) => {
         const gridRect = $("#widgetGrid").getBoundingClientRect();
         const colWidth = gridRect.width / 12;
-        const rowHeight = 90; // Khớp với CSS grid-auto-rows
-        
+        const rowHeight = 90; 
         let newX = Math.ceil((ev.clientX - gridRect.left) / colWidth);
-        let newY = Math.ceil((ev.clientY - gridRect.top) / rowHeight);
-        
-        // Giới hạn trong lưới
+        // Giới hạn lưới
         w.x = Math.max(1, Math.min(12 - getColSpan(w.size) + 1, newX));
-        w.y = Math.max(1, newY);
-        
-        // Vẽ lại ngay lập tức để thấy hiệu ứng
         renderWidgets();
     };
-    
     const up = () => {
         document.removeEventListener("mousemove", move);
         document.removeEventListener("mouseup", up);
-        savePrefs(); // Lưu vị trí mới
+        savePrefs();
     };
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
@@ -271,65 +271,56 @@ function initDrag(e, card) {
 $$(".widget-type-btn").forEach(btn => on(btn, "click", () => {
     const type = btn.dataset.type;
     const w = { id: "w"+Date.now(), type, label: type.toUpperCase(), theme: "green", size: "m", x: 1, y: 1 };
-    if(type === 'slider' || type === 'gauge' || type === 'thermo') { w.min=0; w.max=100; }
+    if(['slider','gauge','thermo'].includes(type)) { w.min=0; w.max=100; }
     if(type === 'camera') w.size = 'l';
-    S.widgets.push(w);
-    savePrefs();
-    renderWidgets();
-    // Đóng menu palette nếu cần
+    S.widgets.push(w); savePrefs(); renderWidgets();
     $("#widgetPaletteMenu").classList.remove("open");
 }));
-
 on($("#widgetPaletteToggle"), "click", () => $("#widgetPaletteMenu").classList.toggle("open"));
 
-// Window Functions (Global) để HTML gọi được
-window.delWidget = (id) => { if(confirm("Xóa widget?")) { S.widgets = S.widgets.filter(w=>w.id!==id); savePrefs(); renderWidgets(); } };
+window.delWidget = (id) => { if(confirm("Xóa?")) { S.widgets = S.widgets.filter(w=>w.id!==id); savePrefs(); renderWidgets(); } };
+
+// Sửa Widget (Bao gồm điền Formula)
 window.editWidget = (id) => {
     S.selW = S.widgets.find(w=>w.id===id);
     if(!S.selW) return;
     $("#widgetConfigOverlay").classList.add("open");
     $("#widgetConfigPanel").classList.add("has-selection");
     
-    // Fill data cũ
     if($("#widgetConfigTitle")) $("#widgetConfigTitle").value = S.selW.label;
     if($("#widgetConfigDevice")) $("#widgetConfigDevice").value = S.selW.deviceId || "";
     if($("#widgetConfigCamera")) $("#widgetConfigCamera").value = S.selW.cameraId || "";
     if($("#widgetConfigSensor")) $("#widgetConfigSensor").value = S.selW.sensorKey || "";
-    if($("#widgetConfigTheme")) $("#widgetConfigTheme").value = S.selW.theme || "green";
-    if($("#widgetConfigSize")) $("#widgetConfigSize").value = S.selW.size || "m";
     
-    // Hiển thị range nếu cần
+    // --- ĐIỀN FORMULA ---
+    if($("#widgetConfigFormula")) $("#widgetConfigFormula").value = S.selW.formula || "";
+    
+    // Range
     const rangeRow = $("#widgetConfigRangeRow");
-    if(rangeRow) rangeRow.style.display = (S.selW.type==='slider' || S.selW.type==='gauge' || S.selW.type==='thermo') ? 'flex' : 'none';
-    if($("#widgetConfigRangeMin")) $("#widgetConfigRangeMin").value = S.selW.min || 0;
-    if($("#widgetConfigRangeMax")) $("#widgetConfigRangeMax").value = S.selW.max || 100;
+    if(rangeRow) rangeRow.style.display = ['slider','gauge','thermo'].includes(S.selW.type) ? 'flex' : 'none';
 };
 
-// Config Events
+// Lưu Config (Map thêm Formula)
 on($("#widgetConfigCloseBtn"), "click", () => $("#widgetConfigOverlay").classList.remove("open"));
-["Title", "Device", "Camera", "Sensor", "Theme", "Size"].forEach(k => {
+["Title", "Device", "Camera", "Sensor", "Formula", "Theme", "Size"].forEach(k => {
     const el = $("#widgetConfig"+k);
     if(el) on(el, "change", () => {
         if(S.selW) { 
-            S.selW[k === 'Title' ? 'label' : k === 'Sensor' ? 'sensorKey' : k === 'Device' ? 'deviceId' : k === 'Camera' ? 'cameraId' : k.toLowerCase()] = el.value;
+            const prop = k === 'Title' ? 'label' : k === 'Sensor' ? 'sensorKey' : k === 'Device' ? 'deviceId' : k === 'Camera' ? 'cameraId' : k === 'Formula' ? 'formula' : k.toLowerCase();
+            S.selW[prop] = el.value;
             savePrefs(); renderWidgets();
         }
     });
 });
-// Riêng range min/max
 ["Min", "Max"].forEach(k => {
     const el = $("#widgetConfigRange"+k);
     if(el) on(el, "input", () => { if(S.selW) { S.selW[k.toLowerCase()] = parseFloat(el.value); savePrefs(); renderWidgets(); } });
 });
 
-async function savePrefs() {
-    await api("/api/me/prefs", "PUT", { widgets: S.widgets, cameras: S.cameras });
-}
-
+async function savePrefs() { await api("/api/me/prefs", "PUT", { widgets: S.widgets, cameras: S.cameras }); }
 function fillOptions() {
     const devOpts = `<option value="">-- Chọn Device --</option>` + S.devices.map(d => `<option value="${d.id}">${d.name||d.id}</option>`).join("");
     const camOpts = `<option value="">-- Chọn Camera --</option>` + S.cameras.map(c => `<option value="${c.id}">${c.name||c.id}</option>`).join("");
-    
     if($("#widgetConfigDevice")) $("#widgetConfigDevice").innerHTML = devOpts;
     if($("#widgetConfigCamera")) $("#widgetConfigCamera").innerHTML = camOpts;
 }
@@ -340,13 +331,11 @@ function fillOptions() {
 function renderDevices() {
     const tbody = $("#deviceTableBody");
     if(!tbody) return;
-    
     const html = S.devices.map(d => `
         <tr onclick="showDetail('${d.id}')">
-            <td>${d.id}</td>
-            <td>${d.name||''}</td>
+            <td>${d.id}</td><td>${d.name||''}</td>
             <td><span class="badge ${d.lastState==='ONLINE'?'badge-online':'badge-offline'}">${d.lastState}</span></td>
-            <td>${typeof d.lastValue === 'object' ? JSON.stringify(d.lastValue) : (d.lastValue ?? JSON.stringify(d.sensors||{}))}</td>
+            <td>${JSON.stringify(d.sensors || d.lastValue || {})}</td>
             <td>${d.updatedAt ? new Date(d.updatedAt).toLocaleTimeString() : '-'}</td>
             <td>
                 <button class="secondary btn-sm" onclick="event.stopPropagation(); ctrl('${d.id}', {command:'toggle'})">Toggle</button>
@@ -366,14 +355,12 @@ window.showDetail = (id) => {
     $("#detailEmpty").style.display="none"; 
     $("#cameraDetailPanel").style.display="none"; 
     $("#deviceDetailPanel").style.display="block";
-    
     $("#detailId").textContent = d.id; 
     $("#detailName").textContent = d.name; 
     $("#detailState").textContent = d.lastState;
     $("#detailValue").textContent = d.lastValue ?? "--";
     $("#detailSensors").textContent = JSON.stringify(d.sensors || {});
-    
-    // Điền sẵn vào Firmware Gen
+    // Auto fill for firmware gen
     if($("#fwDeviceId")) $("#fwDeviceId").value = d.id;
     if($("#fwDeviceName")) $("#fwDeviceName").value = d.name;
 };
@@ -390,66 +377,39 @@ function renderCameras() {
             <td><button class="danger btn-sm" onclick="event.stopPropagation(); delCam('${c.id}')">Xóa</button></td>
         </tr>`).join("") || `<tr><td colspan="3" class="small">Chưa có camera.</td></tr>`;
 }
-
 on($("#camRegisterBtn"), "click", () => {
     const newCam = { id: val("#camIdInput"), name: val("#camNameInput"), snapshotUrl: val("#camUrlInput") };
-    api("/api/cameras/register", "POST", { cameraId: newCam.id, name: newCam.name }).then(() => {
-        S.cameras.push(newCam); 
-        savePrefs(); loadAllData();
-    });
+    api("/api/cameras/register", "POST", { cameraId: newCam.id, name: newCam.name }).then(() => { S.cameras.push(newCam); savePrefs(); loadAllData(); });
 });
-window.delCam = (id) => { if(confirm("Xóa camera?")) { S.cameras = S.cameras.filter(c => c.id !== id); savePrefs(); loadAllData(); } };
-
+window.delCam = (id) => { if(confirm("Xóa?")) { S.cameras = S.cameras.filter(c => c.id !== id); savePrefs(); loadAllData(); } };
 window.showCamDetail = (id) => {
     const c = S.cameras.find(x => x.id == id);
-    $("#detailEmpty").style.display="none"; 
-    $("#deviceDetailPanel").style.display="none"; 
-    $("#cameraDetailPanel").style.display="block";
-    $("#camDetailId").textContent = c.id; 
-    $("#camDetailUrl").textContent = c.snapshotUrl;
+    $("#detailEmpty").style.display="none"; $("#deviceDetailPanel").style.display="none"; $("#cameraDetailPanel").style.display="block";
+    $("#camDetailId").textContent = c.id; $("#camDetailUrl").textContent = c.snapshotUrl;
     if(c.snapshotUrl) $("#camDetailImg").src = c.snapshotUrl;
 };
-
-// Logic Stream Camera Laptop
 on($("#startStreamBtn"), "click", async () => {
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        const video = $("#localVideo");
-        video.srcObject = stream;
-        $("#camStreamStatus").textContent = "Đang stream...";
-        
+        $("#localVideo").srcObject = stream;
         S.timers.stream = setInterval(() => {
-            const canvas = document.createElement("canvas");
-            canvas.width = video.videoWidth; 
-            canvas.height = video.videoHeight;
-            canvas.getContext("2d").drawImage(video, 0, 0);
-            canvas.toBlob(blob => fetch(`${API_BASE}/api/camera/frame`, { 
-                method: "POST", headers: { Authorization: "Bearer "+S.token }, body: blob 
-            }), "image/jpeg", 0.6);
-        }, 300); // Gửi 3 khung hình/giây
-        
-        // Tự xem lại chính mình từ server
-        S.timers.pull = setInterval(() => {
-            $("#serverVideo").src = `${API_BASE}/api/camera/latest/${S.user.id}?t=${Date.now()}`;
-        }, 300);
-        
+            const cvs = document.createElement("canvas"); cvs.width = $("#localVideo").videoWidth; cvs.height = $("#localVideo").videoHeight;
+            cvs.getContext("2d").drawImage($("#localVideo"), 0, 0);
+            cvs.toBlob(b => fetch(`${API_BASE}/api/camera/frame`, { method: "POST", headers: { Authorization: "Bearer "+S.token }, body: b }), "image/jpeg", 0.5);
+        }, 500);
+        S.timers.pull = setInterval(() => { $("#serverVideo").src = `${API_BASE}/api/camera/latest/${S.user.id}?t=${Date.now()}`; }, 500);
         $("#startStreamBtn").disabled = true; $("#stopStreamBtn").disabled = false;
-    } catch(e) { alert("Lỗi camera: " + e.message); }
+    } catch(e) { alert(e.message); }
 });
-
 on($("#stopStreamBtn"), "click", () => {
     clearInterval(S.timers.stream); clearInterval(S.timers.pull);
-    const vid = $("#localVideo");
-    if(vid.srcObject) vid.srcObject.getTracks().forEach(t=>t.stop());
-    vid.srcObject = null;
-    $("#camStreamStatus").textContent = "Đã dừng.";
+    $("#localVideo").srcObject?.getTracks().forEach(t=>t.stop());
     $("#startStreamBtn").disabled = false; $("#stopStreamBtn").disabled = true;
 });
 
 /* =========================================
-   8. FIRMWARE GENERATOR (C++ Code)
+   8. FIRMWARE GENERATOR (ĐÃ SỬA CHUẨN C++)
    ========================================= */
-// Logic thêm dòng Pin
 if($("#fwAddPinBtn")) on($("#fwAddPinBtn"), "click", () => {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td><input class="fw-pin-name" placeholder="Name"></td><td><input class="fw-pin-gpio" placeholder="GPIO"></td>
@@ -458,89 +418,127 @@ if($("#fwAddPinBtn")) on($("#fwAddPinBtn"), "click", () => {
     $("#fwPinsTableBody").appendChild(tr);
 });
 
-// Logic tạo code
 on($("#fwGenerateBtn"), "click", () => {
-    const devId = val("#fwDeviceId") || "my-device";
-    const ssid = val("#fwWifiSsid") || "WIFI_SSID";
-    const pass = val("#fwWifiPass") || "WIFI_PASS";
+    const devId = val("#fwDeviceId") || "ESP-1";
+    const devName = val("#fwDeviceName") || "device";
+    const wifi = val("#fwWifiSsid") || "P201";
+    const pass = val("#fwWifiPass") || "hhhm123456";
     const mqtt = val("#fwMqttHost") || "broker.hivemq.com";
     
-    // Thu thập Pin
-    const pins = Array.from($$("#fwPinsTableBody tr")).map(tr => ({
-        name: tr.querySelector(".fw-pin-name").value,
+    // Lấy list pin từ bảng
+    const pins = Array.from($$("#fwPinsTableBody tr")).map((tr, idx) => ({
+        idx: idx,
+        name: tr.querySelector(".fw-pin-name").value || `PIN_${idx}`,
         gpio: tr.querySelector(".fw-pin-gpio").value,
         mode: tr.querySelector(".fw-pin-mode").value
-    })).filter(p => p.name && p.gpio);
+    })).filter(p => p.gpio);
 
-    // Template C++
-    let code = `// ESP32 Firmware for ${devId}
+    // Tạo chuỗi code đúng chuẩn C++ (Như yêu cầu)
+    let code = `// ESP32 firmware generated by your IoT Platform
+// Board: ESP32 (Arduino core)
+// Thư viện: PubSubClient, ArduinoJson
+
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 
-const char* WIFI_SSID = "${ssid}";
+const char* WIFI_SSID = "${wifi}";
 const char* WIFI_PASS = "${pass}";
-const char* MQTT_SERVER = "${mqtt}";
-const int MQTT_PORT = 1883;
-String DEVICE_ID = "${devId}";
+
+const char* MQTT_HOST = "${mqtt}";
+const int   MQTT_PORT = 1883;
+
+String deviceId = "${devId}";
+String deviceName = "${devName}";
+
+// Defines
+${pins.map(p => `const int ${p.mode==='output' ? 'OUTPUT' : 'INPUT'}_PIN_${p.idx} = ${p.gpio}; // ${p.name}`).join('\n')}
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// Defines
-${pins.map(p => `const int PIN_${p.name.toUpperCase()} = ${p.gpio}; // ${p.mode}`).join('\n')}
-
-void setup() {
-  Serial.begin(115200);
-  // Pin Modes
-${pins.map(p => `  pinMode(PIN_${p.name.toUpperCase()}, ${p.mode==='output'?'OUTPUT':p.mode==='input-analog'?'INPUT':'INPUT_PULLUP'});`).join('\n')}
-  
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
-  
-  client.setServer(MQTT_SERVER, MQTT_PORT);
-  client.setCallback(callback);
-}
-
 void callback(char* topic, byte* payload, unsigned int length) {
-  String msg; for (int i=0;i<length;i++) msg += (char)payload[i];
+  String msg;
+  for (unsigned int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+  Serial.print("Control message: ");
+  Serial.println(msg);
   if (msg.indexOf("toggle") >= 0) {
-    // Ví dụ toggle pin đầu tiên
-    ${pins.length ? `digitalWrite(PIN_${pins[0].name.toUpperCase()}, !digitalRead(PIN_${pins[0].name.toUpperCase()}));` : '// No output pins'}
+    // Toggle Output Pin 0 (Mặc định ví dụ)
+    ${pins.filter(p=>p.mode==='output').length > 0 ? 
+      `digitalWrite(OUTPUT_PIN_${pins.filter(p=>p.mode==='output')[0].idx}, !digitalRead(OUTPUT_PIN_${pins.filter(p=>p.mode==='output')[0].idx}));` 
+      : '// No output pin defined to toggle'}
   }
 }
 
 void reconnect() {
   while (!client.connected()) {
-    if (client.connect(("ESP32_"+DEVICE_ID).c_str())) {
-      client.subscribe(("iot/demo/"+DEVICE_ID+"/control").c_str());
-    } else delay(5000);
+    Serial.print("Connecting MQTT...");
+    String clientId = "esp32-" + deviceId;
+    if (client.connect(clientId.c_str())) {
+      Serial.println("connected");
+      String controlTopic = "iot/demo/" + deviceId + "/control";
+      client.subscribe(controlTopic.c_str());
+    } else {
+      Serial.print(" failed, rc=");
+      Serial.println(client.state());
+      delay(2000);
+    }
   }
 }
 
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  // Pin Setup
+${pins.map(p => `  pinMode(${p.mode==='output'?'OUTPUT':'INPUT'}_PIN_${p.idx}, ${p.mode==='output'?'OUTPUT':'INPUT'});\n  if(${p.mode==='output'}) digitalWrite(${p.mode==='output'?'OUTPUT':'INPUT'}_PIN_${p.idx}, LOW);`).join('\n')}
+
+  Serial.print("Connecting WiFi");
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.print("WiFi OK, IP: ");
+  Serial.println(WiFi.localIP());
+
+  client.setServer(MQTT_HOST, MQTT_PORT);
+  client.setCallback(callback);
+}
+
+unsigned long lastPublish = 0;
+
 void loop() {
-  if (!client.connected()) reconnect();
+  if (!client.connected()) {
+    reconnect();
+  }
   client.loop();
-  
-  // Gửi data cảm biến mỗi 2s
-  static unsigned long last = 0;
-  if (millis() - last > 2000) {
-    last = millis();
-    StaticJsonDocument<256> doc;
+
+  unsigned long now = millis();
+  if (now - lastPublish > 2000) {
+    lastPublish = now;
+
+    StaticJsonDocument<512> doc;
+    doc["name"] = deviceName;
     doc["state"] = "ONLINE";
+    
+    // Sensors Data
     JsonObject sensors = doc.createNestedObject("sensors");
-${pins.filter(p=>p.mode.includes('input')).map(p => `    sensors["${p.name}"] = ${p.mode==='input-analog'?'analogRead':'digitalRead'}(PIN_${p.name.toUpperCase()});`).join('\n')}
-    String out; serializeJson(doc, out);
-    client.publish(("iot/demo/"+DEVICE_ID+"/state").c_str(), out.c_str());
+${pins.filter(p=>p.mode.includes('input')).map(p => `    sensors["${p.name}"] = ${p.mode==='input-analog'?'analogRead':'digitalRead'}(INPUT_PIN_${p.idx});`).join('\n')}
+
+    String topic = "iot/demo/" + deviceId + "/state";
+    String payload;
+    serializeJson(doc, payload);
+    client.publish(topic.c_str(), payload.c_str());
   }
 }
 `;
     $("#fwCodeOutput").value = code;
 });
-on($("#fwCopyBtn"), "click", () => { 
-    navigator.clipboard.writeText($("#fwCodeOutput").value); 
-    $("#fwCopyStatus").textContent = "Đã copy!"; 
-});
+on($("#fwCopyBtn"), "click", () => { navigator.clipboard.writeText($("#fwCodeOutput").value); $("#fwCopyStatus").textContent = "Copied!"; });
 
 /* =========================================
    9. ADMIN & TABS & THEME
@@ -548,20 +546,16 @@ on($("#fwCopyBtn"), "click", () => {
 const tabs = ["dashboard", "devices", "cameras", "admin"];
 $$(".nav-item").forEach(btn => on(btn, "click", () => {
     const t = btn.dataset.tab;
-    if(t === 'admin' && S.user.role !== 'admin') return alert("Chỉ Admin mới được vào!");
+    // Chặn ngay từ Client nếu cố bấm vào Admin
+    if(t === 'admin' && S.user.role !== 'admin') return alert("Access Denied: Chỉ Admin mới được vào!");
     
-    // Switch UI
     tabs.forEach(x => {
         $(`#${x}Section`).style.display = x === t ? "block" : "none";
         const nav = $(`.nav-item[data-tab="${x}"]`);
-        if(nav) {
-            if(x === t) nav.classList.add("active"); else nav.classList.remove("active");
-        }
+        if(nav) x === t ? nav.classList.add("active") : nav.classList.remove("active");
     });
     
-    if(t === 'admin') loadAdmin();
-    else if(t === 'dashboard') renderWidgets();
-    else loadAllData();
+    if(t === 'admin') loadAdmin(); else if(t === 'dashboard') renderWidgets(); else loadAllData();
 }));
 
 async function loadAdmin() {
@@ -588,8 +582,6 @@ function updateThemeToggles() {
 }
 on($("#authThemeToggle"), "click", () => setTheme(S.theme === 'dark' ? 'light' : 'dark'));
 on($("#appThemeToggle"), "click", () => setTheme(S.theme === 'dark' ? 'light' : 'dark'));
-
-// SideNav Toggle
 on($("#sideNavToggle"), "click", () => $("#sideNav").classList.toggle("collapsed"));
 
 /* ==== START ==== */
