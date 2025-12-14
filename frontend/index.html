@@ -4,9 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>IoT Platform</title>
+  <!-- Kiểm tra lại đường dẫn đúng đến styles.css -->
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body data-theme="light"> <div id="authPage" class="full-center">
+<body data-theme="light"> 
+  <div id="authPage" class="full-center">
     <div class="auth-card">
       <div class="auth-topbar">
         <h1 class="auth-title" style="margin:0">📡 IoT Login</h1>
@@ -216,8 +218,8 @@
     function switchAuth(tab) {
       document.getElementById('loginForm').style.display = tab==='login'?'block':'none';
       document.getElementById('registerForm').style.display = tab==='register'?'block':'none';
-      document.getElementById('tabLogin').className = tab==='login'?'active':'';
-      document.getElementById('tabRegister').className = tab==='register'?'active':'';
+      document.getElementById('tabLogin').className = tab==='login'?'active':''; 
+      document.getElementById('tabRegister').className = tab==='register'?'active':''; 
     }
   </script>
   <script src="app.js" defer></script>
