@@ -10,7 +10,7 @@ const nodemailer = require("nodemailer");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const SECRET = process.env.JWT_SECRET || "secret";
+const SECRET = process.env.JWT_SECRET || "hieudeptrai123";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 
