@@ -7,6 +7,7 @@ let API_BASE = localStorage.getItem("iot_api_base") || API_BASE_DEFAULT;
 // Hàm chọn DOM nhanh
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
+const rangeRow = $("#widgetConfigRangeRow");
 const val = (s) => $(s)?.value.trim();
 const on = (el, evt, fn) => el && el.addEventListener(evt, fn);
 
@@ -187,9 +188,11 @@ const W_HTML = {
     // Switch: Nút tròn nổi (Neumorphism)
     switch: (w, v) => {
         const isOn = v === true || v === 1 || String(v).toLowerCase() === 'on';
-        return `<button class="widget-switch-btn ${isOn?'on':''}" onclick="ctrl('${w.deviceId}', {command:'toggle'})">
-            <span style="font-size:24px; color:${isOn?'var(--accent)':'inherit'}">⏻</span>
-        </button>`;
+        // onclick gọi hàm ctrl toggle
+        return `
+        <div class="ios-switch ${isOn ? 'on' : ''}" 
+             onclick="ctrl('${w.deviceId}', {command:'toggle'})">
+        </div>`;
     },
     // Slider
     slider: (w, v) => `<div class="widget-slider-row"><input type="range" min="${w.min}" max="${w.max}" value="${v||0}" onchange="ctrl('${w.deviceId}', {command:'analog', value: Number(this.value)})"><span style="font-weight:bold">${v||0}</span></div>`,
@@ -291,13 +294,36 @@ window.editWidget = (id) => {
     if($("#widgetConfigDevice")) $("#widgetConfigDevice").value = S.selW.deviceId || "";
     if($("#widgetConfigCamera")) $("#widgetConfigCamera").value = S.selW.cameraId || "";
     if($("#widgetConfigSensor")) $("#widgetConfigSensor").value = S.selW.sensorKey || "";
-    
+    if ($("#widgetConfigRangeMin")) $("#widgetConfigRangeMin").value = S.selW.min || 0;
+    if ($("#widgetConfigRangeMax")) $("#widgetConfigRangeMax").value = S.selW.max || 100;
     // --- ĐIỀN FORMULA ---
     if($("#widgetConfigFormula")) $("#widgetConfigFormula").value = S.selW.formula || "";
-    
     // Range
-    const rangeRow = $("#widgetConfigRangeRow");
+    
     if(rangeRow) rangeRow.style.display = ['slider','gauge','thermo'].includes(S.selW.type) ? 'flex' : 'none';
+    const type = S.selW.type;
+
+    // Helper: Lấy row cha để ẩn/hiện
+    const showRow = (id, show) => {
+        const el = $(id);
+        if (el && el.parentElement) el.parentElement.style.display = show ? 'flex' : 'none';
+    };
+
+    // 1. Device Selection: Luôn hiện (Trừ Camera có thể ko cần nhưng cứ để theo ý bạn)
+    showRow("#widgetConfigDevice", type !== 'camera'); 
+    
+    // 2. Camera Selection: Chỉ hiện khi type là 'camera'
+    showRow("#widgetConfigCamera", type === 'camera');
+
+    // 3. Sensor Key & Formula: Không cần cho Camera
+    showRow("#widgetConfigSensor", type !== 'camera');
+    // Nếu HTML của bạn có dòng Formula thì thêm dòng này:
+    // showRow("#widgetConfigFormula", type !== 'camera');
+
+    // 4. Range (Min/Max): Chỉ hiện cho Slider, Gauge, Thermo
+    const needRange = ['slider', 'gauge', 'thermo'].includes(type);
+    const rangeRow = $("#widgetConfigRangeRow"); // Row này trong HTML chứa cả 2 input
+    if (rangeRow) rangeRow.style.display = needRange ? 'flex' : 'none';
 };
 
 // Lưu Config (Map thêm Formula)
