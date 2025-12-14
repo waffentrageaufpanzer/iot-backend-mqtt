@@ -6,7 +6,9 @@
   <title>IoT Platform</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body data-theme="light"> <div id="authPage" class="full-center">
+<body data-theme="light">
+  
+  <div id="authPage" class="full-center">
     <div class="auth-card">
       <div class="auth-topbar">
         <h1 class="auth-title" style="margin:0">📡 IoT Login</h1>
@@ -193,6 +195,10 @@
         <div class="widget-config-row"><span>Device</span><select id="widgetConfigDevice"></select></div>
         <div class="widget-config-row"><span>Camera</span><select id="widgetConfigCamera"></select></div>
         <div class="widget-config-row"><span>Sensor Key</span><input id="widgetConfigSensor" placeholder="temp, hum..." /></div>
+        
+        <div class="widget-config-row"><span>Công thức</span><input id="widgetConfigFormula" placeholder="vd: x * 0.488" /></div>
+        <div class="small" style="margin-left:90px; margin-bottom:5px; opacity:0.7">(x là giá trị thô từ ESP32)</div>
+
         <div class="widget-config-row"><span>Màu</span>
           <select id="widgetConfigTheme">
             <option value="green">Xanh lá</option><option value="blue">Xanh dương</option>
