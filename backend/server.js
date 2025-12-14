@@ -14,7 +14,7 @@ const SECRET = process.env.JWT_SECRET || "hieudeptrai123";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 
-// --- UTILS & DB ---
+// --- 1. UTILS & DB INIT ---
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 let db = { nextId: 1, users: [], devices: [], cameras: [], prefs: {} };
 try { db = { ...db, ...JSON.parse(fs.readFileSync(DB_FILE, "utf8")) }; } catch {}
@@ -23,18 +23,18 @@ const saveDb = () => fs.writeFileSync(DB_FILE, JSON.stringify(db));
 const err = (res, code, msg) => res.status(code).json({ error: msg });
 const getUser = (id) => db.users.find(u => u.id === id);
 
-// Tạo admin mặc định nếu chưa có
+// Tạo admin mặc định
 if (!db.users.find(u => u.username === "admin")) {
     db.users.push({ id: db.nextId++, username: "admin", hash: bcrypt.hashSync("admin123", 10), role: "admin", createdAt: new Date() });
     saveDb();
 }
 
-// --- MIDDLEWARE ---
+// --- 2. MIDDLEWARE CHUNG ---
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(express.raw({ type: "image/jpeg", limit: "10mb" }));
-app.use(express.static(path.join(__dirname, "../frontend")));
 
+// Middleware xác thực
 const auth = (role) => (req, res, next) => {
     try {
         const token = req.headers.authorization?.split(" ")[1];
@@ -44,9 +44,9 @@ const auth = (role) => (req, res, next) => {
     } catch { err(res, 401, "Unauthorized"); }
 };
 
-// --- MQTT & RUNTIME STATE ---
-const rtState = {}; // Lưu trạng thái realtime (RAM)
-const frames = {};  // Lưu frame camera (RAM)
+// --- 3. MQTT & STATE ---
+const rtState = {}; 
+const frames = {};
 const client = mqtt.connect(process.env.MQTT_URL || "mqtt://broker.hivemq.com:1883");
 
 client.on("connect", () => client.subscribe("iot/demo/+/state"));
@@ -57,14 +57,20 @@ client.on("message", (t, m) => {
     } catch {}
 });
 
-// --- EMAIL SETUP ---
 const mailer = process.env.EMAIL_USER ? nodemailer.createTransport({
     service: "gmail", auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
 }) : null;
 
-// --- ROUTES ---
+// ============================================
+// --- 4. API ROUTES (QUAN TRỌNG: PHẢI Ở TRÊN STATIC) ---
+// ============================================
 
-// 1. AUTH
+// >>> ROUTE QUAN TRỌNG BẠN ĐANG THIẾU <<<
+app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", now: new Date() });
+});
+
+// A. AUTH
 app.post("/api/auth/login", (req, res) => {
     const u = db.users.find(x => x.username === req.body.username);
     if (!u || !bcrypt.compareSync(req.body.password, u.hash)) return err(res, 401, "Login failed");
@@ -94,9 +100,8 @@ app.post("/api/auth/verify-email", auth(), (req, res) => {
     res.json({ message: "Verified", user: u });
 });
 
-// 2. DEVICES
+// B. DEVICES
 app.get("/api/devices", auth(), (req, res) => {
-    // Merge DB config + Runtime MQTT state
     const list = db.devices.filter(d => req.user.role === "admin" || d.owner === req.user.id)
         .map(d => ({ ...d, ...rtState[d.id] })); 
     res.json(list);
@@ -123,7 +128,7 @@ app.delete("/api/devices/:id", auth(), (req, res) => {
     res.json({ ok: true });
 });
 
-// 3. CAMERAS
+// C. CAMERAS
 app.get("/api/cameras", auth(), (req, res) => {
     res.json(db.cameras.filter(c => req.user.role === "admin" || c.owner === req.user.id));
 });
@@ -136,7 +141,6 @@ app.post("/api/cameras/register", auth(), (req, res) => {
     res.json({ ok: true });
 });
 
-// Frame streaming (nhận JPEG -> lưu RAM -> Client lấy)
 app.post("/api/camera/frame", auth(), (req, res) => {
     const camId = req.query.cameraId || req.headers["x-camera-id"] || req.user.id;
     frames[camId] = req.body;
@@ -148,27 +152,39 @@ app.get("/api/camera/latest/:id", (req, res) => {
     res.set("Content-Type", "image/jpeg").send(frames[req.params.id]);
 });
 
-// 4. USER PREFS (Dashboard widgets)
+// D. PREFS & ADMIN
 app.get("/api/me/prefs", auth(), (req, res) => res.json(db.prefs[req.user.id] || { widgets: [] }));
 app.put("/api/me/prefs", auth(), (req, res) => {
     db.prefs[req.user.id] = req.body; saveDb();
     res.json({ ok: true });
 });
 
-// 5. ADMIN
 app.get("/api/admin/users", auth("admin"), (req, res) => res.json(db.users));
 app.delete("/api/admin/users/:id", auth("admin"), (req, res) => {
     db.users = db.users.filter(u => u.id !== parseInt(req.params.id)); saveDb();
     res.json({ ok: true });
 });
 
+// ============================================
+// --- 5. STATIC FILES (PHẢI NẰM CUỐI CÙNG) ---
+// ============================================
+
 const FRONTEND_DIR = path.join(__dirname, "../frontend");
+
+// Phục vụ file tĩnh (css, js, ảnh)
 app.use(express.static(FRONTEND_DIR));
 
-app.get("/", (req, res) => {
+// Route "Catch-all": Bắt tất cả các request còn lại để trả về index.html
+// Dùng regex /(.*)/ để tương thích với Express 5
+app.get(/(.*)/, (req, res) => {
     const indexPath = path.join(FRONTEND_DIR, "index.html");
+    if (fs.existsSync(indexPath)) {
         res.sendFile(indexPath);
+    } else {
+        res.status(404).send("Frontend not found. Check deployment.");
+    }
 });
+
 // ===== START =====
 app.listen(PORT, () => {
     console.log(`Backend running at http://localhost:${PORT}`);
