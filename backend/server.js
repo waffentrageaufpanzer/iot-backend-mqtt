@@ -1,258 +1,147 @@
-/* 1. CONFIG */
-const API_BASE = localStorage.getItem("iot_api_base") || window.location.origin;
-const $ = (s) => document.querySelector(s);
-const $$ = (s) => document.querySelectorAll(s);
-const val = (s) => $(s)?.value.trim();
-const on = (el, evt, fn) => el && el.addEventListener(evt, fn);
+require("dotenv").config();
+const fs = require("fs");
+const path = require("path");
+const express = require("express");
+const cors = require("cors");
+const mqtt = require("mqtt");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const nodemailer = require("nodemailer");
 
-const S = {
-    token: localStorage.getItem("iot_token"),
-    user: JSON.parse(localStorage.getItem("iot_user") || "null"),
-    devices: [], cameras: [], widgets: [], 
-    theme: localStorage.getItem("iot_theme") || "light",
-    editMode: false, selW: null, timers: { auto: null }
+const app = express();
+const PORT = process.env.PORT || 4000;
+const SECRET = process.env.JWT_SECRET || "hieudeptrai123";
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
+const DB_FILE = path.join(DATA_DIR, "db.json");
+
+// --- 1. UTILS & DB INIT ---
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+let db = { nextId: 1, users: [], devices: [], cameras: [], prefs: {} };
+try { db = { ...db, ...JSON.parse(fs.readFileSync(DB_FILE, "utf8")) }; } catch {}
+
+const saveDb = () => fs.writeFileSync(DB_FILE, JSON.stringify(db));
+const err = (res, code, msg) => res.status(code).json({ error: msg });
+
+// Tạo admin mặc định
+if (!db.users.find(u => u.username === "admin")) {
+    db.users.push({ id: db.nextId++, username: "admin", hash: bcrypt.hashSync("admin123", 10), role: "admin", createdAt: new Date() });
+    saveDb();
+}
+
+// --- 2. MIDDLEWARE & SECURITY ---
+app.use(cors());
+app.use(express.json({ limit: "2mb" }));
+app.use(express.raw({ type: "image/jpeg", limit: "10mb" }));
+
+// Rate Limiter: Chống spam login (5 lần sai/phút)
+const loginAttempts = new Map();
+const rateLimit = (req, res, next) => {
+    const ip = req.ip;
+    const now = Date.now();
+    const record = loginAttempts.get(ip) || { count: 0, time: now };
+    if (now - record.time > 60000) { record.count = 0; record.time = now; } 
+    if (record.count >= 5) return err(res, 429, "Thử lại sau 1 phút.");
+    req.rateLimitRecord = record;
+    next();
 };
 
-async function api(path, method = "GET", body = null) {
-    const headers = { "Content-Type": "application/json" };
-    if (S.token) headers.Authorization = "Bearer " + S.token;
+// Auth Middleware: Kiểm tra token & quyền
+const auth = (role) => (req, res, next) => {
     try {
-        const res = await fetch(API_BASE + path, { method, headers, body: body ? JSON.stringify(body) : null });
-        const data = await res.json();
-        if (!res.ok) { if(res.status === 401) logout(); throw data.error || res.status; }
-        return data;
-    } catch (e) { console.error(e); return null; }
-}
-
-/* 2. AUTH & INIT */
-function renderApp() {
-    if (S.token) {
-        $("#authPage").classList.add("hidden");
-        $("#appPage").classList.remove("hidden");
-        $("#userBadge").textContent = S.user.username;
-        if(S.user.role !== 'admin') { $("#navAdmin").classList.add("hidden"); $("#adminSection").classList.add("hidden"); } 
-        else $("#navAdmin").classList.remove("hidden");
-        loadAllData();
-        startAutoRefresh();
-    } else {
-        $("#authPage").classList.remove("hidden");
-        $("#appPage").classList.add("hidden");
-    }
-    document.body.setAttribute("data-theme", S.theme);
-    updateThemeToggles();
-}
-
-on($("#loginBtn"), "click", async () => {
-    const res = await api("/api/auth/login", "POST", { username: val("#loginUser"), password: val("#loginPass") });
-    if(res) saveSession(res); else alert("Login Failed");
-});
-on($("#registerBtn"), "click", async () => {
-    const res = await api("/api/auth/register-public", "POST", { username: val("#regUser"), email: val("#regEmail"), password: val("#regPass") });
-    if(res) { saveSession(res); alert("Registered!"); }
-});
-on($("#logoutBtn"), "click", logout);
-on($("#toggleApiBaseBtn"), "click", () => $("#apiBaseRow").style.display = "flex");
-on($("#saveApiBaseBtn"), "click", () => { localStorage.setItem("iot_api_base", val("#apiBaseInput")); location.reload(); });
-
-function saveSession(data) {
-    localStorage.setItem("iot_token", S.token = data.token);
-    localStorage.setItem("iot_user", JSON.stringify(S.user = data.user));
-    renderApp();
-}
-function logout() { localStorage.clear(); location.reload(); }
-
-/* 3. DATA & LOGIC */
-async function loadAllData() {
-    const [prefs, devs, cams] = await Promise.all([api("/api/me/prefs"), api("/api/devices"), api("/api/cameras")]);
-    if(prefs) { S.widgets = prefs.widgets||[]; S.cameras = prefs.cameras||(cams||[]); }
-    if(devs) S.devices = devs;
-    renderDevices(); renderCameras(); renderWidgets(); fillOptions();
-}
-
-function startAutoRefresh() {
-    if(S.timers.auto) clearInterval(S.timers.auto);
-    S.timers.auto = setInterval(async () => {
-        if(document.hidden || !S.token) return;
-        const devs = await api("/api/devices");
-        if(devs) { S.devices = devs; refreshWidgetValues(); renderDevices(); }
-    }, 3000);
-}
-
-// --- LOGIC CÔNG THỨC (QUAN TRỌNG) ---
-const getVal = (w, d) => {
-    if (!d) return 0;
-    let raw = d.sensors?.[w.sensorKey] ?? d.lastValue ?? 0;
-    if (w.formula && w.formula.trim() !== "") {
-        try {
-            const calc = new Function('x', `return ${w.formula}`);
-            return parseFloat(calc(raw)).toFixed(2);
-        } catch { return raw; }
-    }
-    return raw;
+        const token = req.headers.authorization?.split(" ")[1];
+        if (!token) throw "No token";
+        req.user = jwt.verify(token, SECRET);
+        if (role && req.user.role !== role) return err(res, 403, "Cần quyền Admin!");
+        next();
+    } catch { err(res, 401, "Unauthorized"); }
 };
 
-/* 4. DASHBOARD WIDGETS */
-const W_HTML = {
-    switch: (w, v) => {
-        const isOn = v === true || v === 1 || String(v).toLowerCase() === 'on';
-        return `<button class="widget-switch-btn ${isOn?'on':''}" onclick="ctrl('${w.deviceId}', {command:'toggle'})"><span>⏻</span></button>`;
-    },
-    slider: (w, v) => `<div class="widget-slider-row"><input type="range" min="${w.min}" max="${w.max}" value="${v||0}" onchange="ctrl('${w.deviceId}', {command:'analog', value: Number(this.value)})"><span>${v||0}</span></div>`,
-    thermo: (w, v) => `<div class="widget-value-big" style="color:var(--danger)">${v||0}°C</div>`,
-    gauge: (w, v) => `<div class="widget-value-big" style="color:var(--acc2)">${v||0}</div>`,
-    button: (w) => `<button class="btn-neu-rect" onmousedown="ctrl('${w.deviceId}', {command:'${w.sensorKey||'btn'}', action:'press'})">PRESS</button>`,
-    dpad: (w) => `<div class="widget-dpad"><button class="dpad-btn" onclick="ctrl('${w.deviceId}', {command:'move', dir:'up'})">↑</button><div><button class="dpad-btn" onclick="ctrl('${w.deviceId}', {command:'move', dir:'left'})">←</button><button class="dpad-btn">●</button><button class="dpad-btn" onclick="ctrl('${w.deviceId}', {command:'move', dir:'right'})">→</button></div><button class="dpad-btn" onclick="ctrl('${w.deviceId}', {command:'move', dir:'down'})">↓</button></div>`,
-    camera: (w) => `<img src="${S.cameras.find(c=>c.id==w.cameraId)?.snapshotUrl || ''}" class="cam-preview" style="height:80px">`
-};
+// --- 3. MQTT & STATE ---
+const rtState = {}; 
+const frames = {};
+const client = mqtt.connect(process.env.MQTT_URL || "mqtt://broker.hivemq.com:1883");
 
-function renderWidgets() {
-    $("#widgetGrid").innerHTML = S.widgets.map(w => {
-        const dev = S.devices.find(d => d.id == w.deviceId);
-        const val = getVal(w, dev);
-        return `
-        <div class="widget-card" style="grid-column: span ${getColSpan(w.size)}; grid-row: span ${w.type==='camera'?4:2}" data-id="${w.id}">
-            <div class="widget-header"><span>${w.label||w.type}</span>${S.editMode ? `<button style="color:red;background:none;border:none;cursor:pointer" onclick="delWidget('${w.id}')">✕</button><button style="background:none;border:none;cursor:pointer" onclick="editWidget('${w.id}')">⚙</button>` : ''}</div>
-            <div class="widget-body">${W_HTML[w.type] ? W_HTML[w.type](w, val) : 'Err'}</div>
-        </div>`;
-    }).join("");
-    if(S.editMode) $$(".widget-card").forEach(c => c.onmousedown = (e) => initDrag(e, c));
-}
-
-function refreshWidgetValues() {
-    S.widgets.forEach(w => {
-        const card = $(`.widget-card[data-id="${w.id}"]`);
-        if(!card) return;
-        const dev = S.devices.find(d => d.id == w.deviceId);
-        const val = getVal(w, dev);
-        if(w.type === 'switch') {
-            const btn = card.querySelector(".widget-switch-btn");
-            if(btn) { 
-                const isOn = val === true || val === 1 || String(val) === 'on';
-                isOn ? btn.classList.add('on') : btn.classList.remove('on');
-            }
-        } else if(w.type === 'thermo' || w.type === 'gauge' || w.type === 'slider') {
-            card.querySelector(".widget-body").innerHTML = W_HTML[w.type](w, val);
-        }
-    });
-}
-
-const getColSpan = (s) => s==='s'?3:s==='l'?6:4;
-
-/* 5. EDIT & CONFIG */
-on($("#dashModeBtn"), "click", () => {
-    S.editMode = !S.editMode; $("#dashModeBtn").textContent = S.editMode?"Done":"Edit";
-    $("#widgetGrid").classList.toggle("widgets-edit", S.editMode); renderWidgets();
-});
-
-// Drag Logic (Rút gọn)
-function initDrag(e, card) {
-    if(e.target.tagName==='BUTTON') return;
-    const w = S.widgets.find(x => x.id == card.dataset.id);
-    const move = (ev) => {
-        const rect = $("#widgetGrid").getBoundingClientRect();
-        w.x = Math.max(1, Math.min(12, Math.ceil((ev.clientX - rect.left) / (rect.width/12))));
-        renderWidgets();
-    };
-    const up = () => { document.removeEventListener("mousemove",move); document.removeEventListener("mouseup",up); savePrefs(); };
-    document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
-}
-
-// Widget CRUD
-$$(".widget-type-btn").forEach(btn => on(btn, "click", () => {
-    const type = btn.dataset.type;
-    const w = { id: "w"+Date.now(), type, label: type.toUpperCase(), theme: "green", size: "m", x: 1 };
-    if(['slider','gauge','thermo'].includes(type)) { w.min=0; w.max=100; }
-    if(type==='camera') w.size='l';
-    S.widgets.push(w); savePrefs(); renderWidgets();
-}));
-on($("#widgetPaletteToggle"), "click", () => $("#widgetPaletteMenu").classList.toggle("open"));
-
-window.delWidget = (id) => { if(confirm("Del?")) { S.widgets=S.widgets.filter(w=>w.id!==id); savePrefs(); renderWidgets(); } };
-window.editWidget = (id) => {
-    S.selW = S.widgets.find(w=>w.id===id);
-    $("#widgetConfigOverlay").classList.add("open");
-    ["Title","Device","Sensor","Formula"].forEach(k => $("#widgetConfig"+k).value = S.selW[k.toLowerCase()] || (k==='Formula'?S.selW.formula:'') || "");
-    const rangeRow = $("#widgetConfigRangeRow");
-    if(rangeRow) rangeRow.style.display = ['slider','gauge','thermo'].includes(S.selW.type) ? 'flex' : 'none';
-};
-
-on($("#widgetConfigCloseBtn"), "click", () => $("#widgetConfigOverlay").classList.remove("open"));
-["Title", "Device", "Camera", "Sensor", "Formula", "Theme", "Size"].forEach(k => {
-    on($("#widgetConfig"+k), "change", (e) => {
-        if(S.selW) { 
-            const prop = k==='Title'?'label':k==='Sensor'?'sensorKey':k==='Device'?'deviceId':k==='Formula'?'formula':k.toLowerCase();
-            S.selW[prop] = e.target.value; savePrefs(); renderWidgets();
-        }
-    });
-});
-["Min", "Max"].forEach(k => on($("#widgetConfigRange"+k), "input", (e) => { if(S.selW) { S.selW[k.toLowerCase()] = Number(e.target.value); savePrefs(); renderWidgets(); } }));
-
-async function savePrefs() { await api("/api/me/prefs", "PUT", { widgets: S.widgets, cameras: S.cameras }); }
-function fillOptions() {
-    const opts = (arr) => arr.map(x => `<option value="${x.id}">${x.name||x.id}</option>`).join("");
-    $("#widgetConfigDevice").innerHTML = `<option value="">--Device--</option>` + opts(S.devices);
-    $("#widgetConfigCamera").innerHTML = `<option value="">--Camera--</option>` + opts(S.cameras);
-}
-
-/* 6. DEVICES & CAMERAS */
-function renderDevices() {
-    $("#deviceTableBody").innerHTML = S.devices.map(d => `<tr><td>${d.id}</td><td>${d.name}</td><td>${d.lastState}</td><td>${JSON.stringify(d.sensors||d.lastValue)}</td><td><button class="btn-neu-rect" onclick="ctrl('${d.id}',{command:'toggle'})">Toggle</button><button class="btn-neu-rect" style="color:red" onclick="delDev('${d.id}')">X</button></td></tr>`).join("");
-    if($("#fwDeviceId")) $("#fwDeviceId").value = S.devices[0]?.id || "";
-}
-window.ctrl = (id, pl) => api(`/api/devices/${id}/control`, "POST", pl);
-window.delDev = (id) => confirm("Xóa?") && api(`/api/devices/${id}`, "DELETE").then(loadAllData);
-on($("#claimBtn"), "click", () => api("/api/devices/register", "POST", { deviceId: val("#claimDeviceId"), name: val("#claimDeviceName") }).then(loadAllData));
-on($("#refreshBtn"), "click", loadAllData);
-
-function renderCameras() {
-    $("#cameraTableBody").innerHTML = S.cameras.map(c => `<tr><td>${c.id}</td><td>${c.name}</td><td><button style="color:red" onclick="delCam('${c.id}')">X</button></td></tr>`).join("");
-}
-on($("#camRegisterBtn"), "click", () => api("/api/cameras/register", "POST", { cameraId: val("#camIdInput"), name: val("#camNameInput"), snapshotUrl: val("#camUrlInput") }).then(loadAllData));
-window.delCam = (id) => confirm("Xóa?") && api(`/api/cameras/${id}`, "DELETE").then(loadAllData);
-
-on($("#startStreamBtn"), "click", async () => {
+client.on("connect", () => client.subscribe("iot/demo/+/state"));
+client.on("message", (t, m) => {
     try {
-        const s = await navigator.mediaDevices.getUserMedia({video:true}); $("#localVideo").srcObject = s;
-        S.timers.stream = setInterval(() => {
-            const cvs = document.createElement("canvas"); cvs.width = 300; cvs.height = 200;
-            cvs.getContext("2d").drawImage($("#localVideo"),0,0,300,200);
-            cvs.toBlob(b => fetch(`${API_BASE}/api/camera/frame`, { method:"POST", headers:{Authorization:`Bearer ${S.token}`}, body:b }), "image/jpeg", 0.5);
-        }, 500);
-        S.timers.pull = setInterval(() => $("#serverVideo").src = `${API_BASE}/api/camera/latest/${S.user.id}?t=${Date.now()}`, 500);
-        $("#startStreamBtn").disabled = true; $("#stopStreamBtn").disabled = false;
-    } catch(e) { alert(e.message); }
-});
-on($("#stopStreamBtn"), "click", () => {
-    clearInterval(S.timers.stream); clearInterval(S.timers.pull);
-    $("#localVideo").srcObject?.getTracks().forEach(t=>t.stop());
-    $("#startStreamBtn").disabled = false; $("#stopStreamBtn").disabled = true;
+        const devId = t.split("/")[2];
+        rtState[devId] = { ...rtState[devId], ...JSON.parse(m.toString()), updatedAt: new Date() };
+    } catch {}
 });
 
-/* 7. ADMIN & THEME & FW GEN */
-on($("#fwGenerateBtn"), "click", () => {
-    const pins = Array.from($$("#fwPinsTableBody tr")).map(tr => `const int PIN_${tr.querySelector(".fw-pin-name").value.toUpperCase()} = ${tr.querySelector(".fw-pin-gpio").value};`).join("\n");
-    $("#fwCodeOutput").value = `#include <WiFi.h>\n#include <PubSubClient.h>\n//...\n${pins}\n// Logic MQTT here...`;
+const mailer = process.env.EMAIL_USER ? nodemailer.createTransport({
+    service: "gmail", auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+}) : null;
+
+// --- 4. API ROUTES ---
+app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+
+// A. Auth
+app.post("/api/auth/login", rateLimit, (req, res) => {
+    const { username, password } = req.body;
+    const u = db.users.find(x => x.username === username);
+    if (!u || !bcrypt.compareSync(password, u.hash)) {
+        req.rateLimitRecord.count++; loginAttempts.set(req.ip, req.rateLimitRecord);
+        return err(res, 401, "Sai tài khoản/mật khẩu");
+    }
+    loginAttempts.delete(req.ip);
+    res.json({ token: jwt.sign({ id: u.id, role: u.role }, SECRET), user: { id: u.id, username: u.username, role: u.role } });
 });
-if($("#fwAddPinBtn")) on($("#fwAddPinBtn"), "click", () => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td><input class="fw-pin-name" style="width:80px"></td><td><input class="fw-pin-gpio" style="width:50px"></td><td><button onclick="this.closest('tr').remove()">X</button></td>`;
-    $("#fwPinsTableBody").appendChild(tr);
+
+app.post("/api/auth/register-public", async (req, res) => {
+    const { username, password, email } = req.body;
+    if (db.users.find(u => u.username === username)) return err(res, 400, "User đã tồn tại");
+    const newUser = { id: db.nextId++, username, email, role: "user", hash: bcrypt.hashSync(password, 10), createdAt: new Date() };
+    db.users.push(newUser); saveDb();
+    if (mailer) mailer.sendMail({ from: process.env.EMAIL_USER, to: email, subject: "Welcome", text: "Welcome to IoT" }).catch(()=>{});
+    res.json({ message: "OK", token: jwt.sign({ id: newUser.id, role: "user" }, SECRET), user: newUser });
 });
 
-async function loadAdmin() {
-    const users = await api("/api/admin/users");
-    $("#adminUserTableBody").innerHTML = users.map(u => `<tr><td>${u.id}</td><td>${u.username}</td><td>${u.role}</td><td><button onclick="admDel('${u.id}')">Del</button></td></tr>`).join("");
-}
-window.admDel = (id) => confirm("Del?") && api(`/api/admin/users/${id}`, "DELETE").then(loadAdmin);
+// B. Devices
+app.get("/api/devices", auth(), (req, res) => {
+    const list = db.devices.filter(d => req.user.role === "admin" || d.owner === req.user.id)
+        .map(d => ({ ...d, ...(rtState[d.id] || {}) })); 
+    res.json(list);
+});
 
-const toggleTheme = () => {
-    S.theme = S.theme === 'dark' ? 'light' : 'dark';
-    localStorage.setItem("iot_theme", S.theme);
-    renderApp();
-};
-on($("#authThemeToggle"), "click", toggleTheme);
-on($("#appThemeToggle"), "click", toggleTheme);
-function updateThemeToggles() { const i = S.theme==='dark'?'🌙':'☀️'; if($("#authThemeToggle")) $("#authThemeToggle").textContent=i; if($("#appThemeToggle")) $("#appThemeToggle").textContent=i; }
+app.post("/api/devices/register", auth(), (req, res) => {
+    if (db.devices.find(d => d.id === req.body.deviceId)) return err(res, 400, "Đã tồn tại");
+    db.devices.push({ id: req.body.deviceId, name: req.body.name, owner: req.user.id }); saveDb(); res.json({ ok: true });
+});
 
-/* START */
-renderApp();
+app.post("/api/devices/:id/control", auth(), (req, res) => {
+    // Chỉ chủ sở hữu hoặc admin mới được điều khiển
+    const d = db.devices.find(x => x.id === req.params.id);
+    if (d && d.owner !== req.user.id && req.user.role !== 'admin') return err(res, 403, "Không có quyền");
+    client.publish(`iot/demo/${req.params.id}/control`, JSON.stringify({ ...req.body, from: req.user.id }));
+    res.json({ ok: true });
+});
+
+app.delete("/api/devices/:id", auth(), (req, res) => {
+    const idx = db.devices.findIndex(d => d.id === req.params.id && (req.user.role === "admin" || d.owner === req.user.id));
+    if (idx === -1) return err(res, 403, "Không được phép");
+    db.devices.splice(idx, 1); saveDb(); res.json({ ok: true });
+});
+
+// C. Camera & Prefs
+app.get("/api/cameras", auth(), (req, res) => res.json(db.cameras.filter(c => req.user.role === "admin" || c.owner === req.user.id)));
+app.post("/api/cameras/register", auth(), (req, res) => { db.cameras.push({ id: req.body.cameraId, name: req.body.name, owner: req.user.id }); saveDb(); res.json({ ok: true }); });
+app.get("/api/me/prefs", auth(), (req, res) => res.json(db.prefs[req.user.id] || { widgets: [] }));
+app.put("/api/me/prefs", auth(), (req, res) => { db.prefs[req.user.id] = req.body; saveDb(); res.json({ ok: true }); });
+
+app.post("/api/camera/frame", auth(), (req, res) => { frames[req.headers["x-camera-id"] || req.user.id] = req.body; res.json({ ok: true }); });
+app.get("/api/camera/latest/:id", (req, res) => frames[req.params.id] ? res.type("jpeg").send(frames[req.params.id]) : err(res, 404, "No signal"));
+
+// D. Admin Only
+app.get("/api/admin/users", auth("admin"), (req, res) => res.json(db.users));
+app.delete("/api/admin/users/:id", auth("admin"), (req, res) => {
+    if(parseInt(req.params.id) === req.user.id) return err(res, 400, "Không thể tự xóa");
+    db.users = db.users.filter(u => u.id !== parseInt(req.params.id)); saveDb(); res.json({ ok: true });
+});
+
+// 5. Static
+const FRONTEND_DIR = path.join(__dirname, "../frontend");
+app.use(express.static(FRONTEND_DIR));
+app.get(/(.*)/, (req, res) => res.sendFile(path.join(FRONTEND_DIR, "index.html")));
+
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
