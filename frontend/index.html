@@ -2,11 +2,11 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>IoT Platform</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body data-theme="dark">
-  <!-- AUTH PAGE -->
   <div id="authPage" class="full-center">
     <div class="auth-card">
       <div class="auth-topbar">
@@ -16,15 +16,10 @@
         </div>
         <button type="button" class="icon-btn" id="authThemeToggle">🌙</button>
       </div>
-
-      <h1 class="auth-title" data-i18n-key="auth.title">IoT Platform</h1>
-      <p class="small" data-i18n-key="auth.subtitle">Đăng nhập để quản lý thiết bị.</p>
-
-      <!-- backend URL -->
+      <h1 class="auth-title">📡 IoT Platform</h1>
+      
       <div class="row" style="margin-top:4px;">
-        <button class="secondary btn-sm" type="button" id="toggleApiBaseBtn">
-          ⚙ Backend URL
-        </button>
+        <button class="secondary btn-sm" type="button" id="toggleApiBaseBtn">⚙ Backend URL</button>
       </div>
       <div class="row" id="apiBaseRow" style="display:none;">
         <input id="apiBaseInput" placeholder="https://...railway.app" />
@@ -32,467 +27,205 @@
       </div>
 
       <div class="tabs">
-        <button id="tabLogin" class="active" type="button" data-i18n-key="auth.loginTab">
-          Đăng nhập
-        </button>
-        <button id="tabRegister" type="button" data-i18n-key="auth.registerTab">
-          Đăng ký
-        </button>
+        <button id="tabLogin" class="active" onclick="switchAuth('login')">Đăng nhập</button>
+        <button id="tabRegister" onclick="switchAuth('register')">Đăng ký</button>
       </div>
 
-      <!-- LOGIN -->
       <div id="loginForm">
-        <div class="row">
-          <input id="loginUser" placeholder="Username" />
-        </div>
-        <div class="row">
-          <input id="loginPass" type="password" placeholder="Password" />
-        </div>
-        <div class="row">
-          <button id="loginBtn" type="button" data-i18n-key="auth.loginBtn">
-            Đăng nhập
-          </button>
-        </div>
+        <div class="row"><input id="loginUser" placeholder="Username" /></div>
+        <div class="row"><input id="loginPass" type="password" placeholder="Password" /></div>
+        <div class="row"><button id="loginBtn" type="button">Đăng nhập</button></div>
       </div>
 
-      <!-- REGISTER -->
       <div id="registerForm" style="display:none;">
-        <div class="row">
-          <input id="regUser" placeholder="Username" />
-        </div>
-        <div class="row">
-          <input id="regEmail" type="email" placeholder="Email" />
-        </div>
-        <div class="row">
-          <input id="regPass" type="password" placeholder="Password" />
-        </div>
-        <div class="row">
-          <input id="regPassConfirm" type="password" placeholder="Confirm password" />
-        </div>
-        <div class="row">
-          <button id="registerBtn" type="button" data-i18n-key="auth.registerBtn">
-            Tạo tài khoản
-          </button>
-        </div>
-
-        <div class="row">
-          <div class="small">OTP email (nếu có):</div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;">
-            <input id="otpInput" placeholder="6 số" style="max-width:110px;" />
-            <button class="secondary btn-sm" id="verifyOtpBtn" type="button">Xác nhận</button>
-            <button class="secondary btn-sm" id="resendOtpBtn" type="button">Gửi lại</button>
-          </div>
+        <div class="row"><input id="regUser" placeholder="Username" /></div>
+        <div class="row"><input id="regEmail" type="email" placeholder="Email" /></div>
+        <div class="row"><input id="regPass" type="password" placeholder="Password" /></div>
+        <div class="row"><input id="regPassConfirm" type="password" placeholder="Confirm Pass" /></div>
+        <div class="row"><button id="registerBtn" type="button">Đăng ký</button></div>
+        <div class="row" style="align-items: center; gap: 5px; flex-direction: row;">
+          <input id="otpInput" placeholder="OTP (6 số)" style="width:100px" />
+          <button class="secondary btn-sm" id="verifyOtpBtn">Verify</button>
         </div>
       </div>
-
-      <div id="authMessage" class="small">Chưa đăng nhập.</div>
     </div>
   </div>
 
-  <!-- APP PAGE -->
   <div id="appPage" style="display:none;">
     <div class="layout">
-      <!-- SIDEBAR -->
       <aside class="sidebar" id="sideNav">
         <div class="sidebar-top">
           <span class="sidebar-logo">IoT</span>
-          <button class="icon-btn" type="button" id="sideNavToggle">☰</button>
+          <button class="icon-btn" id="sideNavToggle">☰</button>
         </div>
         <div class="sidebar-nav">
-          <button type="button" class="nav-item active" data-tab="dashboard">
-            <span class="nav-icon">📊</span>
-            <span class="nav-label" data-i18n-key="nav.dashboard">Dashboard</span>
-          </button>
-          <button type="button" class="nav-item" data-tab="devices">
-            <span class="nav-icon">🔌</span>
-            <span class="nav-label" data-i18n-key="nav.devices">Thiết bị</span>
-          </button>
-          <button type="button" class="nav-item" data-tab="cameras">
-            <span class="nav-icon">📷</span>
-            <span class="nav-label" data-i18n-key="nav.cameras">Camera</span>
-          </button>
-          <button
-            type="button"
-            class="nav-item"
-            data-tab="admin"
-            id="navAdmin"
-            style="display:none;"
-          >
-            <span class="nav-icon">🛡️</span>
-            <span class="nav-label" data-i18n-key="nav.admin">Admin</span>
-          </button>
+          <button class="nav-item active" data-tab="dashboard"><span class="nav-icon">📊</span> Dash</button>
+          <button class="nav-item" data-tab="devices"><span class="nav-icon">🔌</span> Device</button>
+          <button class="nav-item" data-tab="cameras"><span class="nav-icon">📷</span> Cam</button>
+          <button class="nav-item" data-tab="admin" id="navAdmin" style="display:none"><span class="nav-icon">🛡️</span> Admin</button>
         </div>
       </aside>
 
-      <!-- MAIN -->
       <div class="card">
         <div class="app-header">
-          <div class="app-title-text" data-i18n-key="app.title">IoT Platform</div>
+          <div class="app-title-text">IoT Platform <span id="userBadge" class="pill small"></span></div>
           <div class="header-right">
-            <span id="healthBadge" class="pill pill-red">Backend</span>
-            <span id="userBadge" class="pill small"></span>
-            <div class="lang-toggle" id="appLangToggle">
-              <button type="button" data-lang="vi">VI</button>
-              <button type="button" data-lang="en">EN</button>
-            </div>
-            <button type="button" class="icon-btn" id="appThemeToggle">🌙</button>
-            <button
-              id="changePassBtn"
-              class="secondary btn-sm"
-              type="button"
-              data-i18n-key="app.changePass"
-            >
-              Đổi mật khẩu
-            </button>
-            <button
-              id="logoutBtn"
-              class="secondary btn-sm"
-              type="button"
-              data-i18n-key="app.logout"
-            >
-              Đăng xuất
-            </button>
+            <button class="icon-btn" id="appThemeToggle">🌙</button>
+            <button id="logoutBtn" class="secondary btn-sm">Thoát</button>
           </div>
         </div>
 
-        <!-- DASHBOARD -->
         <section id="dashboardSection">
           <div class="dash-toolbar">
-            <div class="dash-title-row">
-              <div class="dash-title" data-i18n-key="dash.title">Dashboard</div>
-              <button id="dashModeBtn" type="button" class="secondary btn-sm">Edit</button>
-            </div>
+            <button id="dashModeBtn" class="secondary btn-sm">Edit Mode</button>
             <div class="widget-palette">
-              <button class="widget-add-main" type="button" id="widgetPaletteToggle">
-                <span>＋</span>
-                <span data-i18n-key="dash.addWidget">Thêm widget</span>
-                <span class="widget-add-caret">▾</span>
-              </button>
+              <button class="widget-add-main" id="widgetPaletteToggle">＋ Widget</button>
               <div class="widget-palette-menu" id="widgetPaletteMenu">
-                <button class="widget-type-btn" data-type="button">
-                <span>🟣</span><span>Button</span></button>
-                <button class="widget-type-btn" type="button" data-type="switch">
-                  <span>⏻</span><span>Công tắc</span>
-                </button>
-                <button class="widget-type-btn" type="button" data-type="slider">
-                  <span>🎚️</span><span>Analog</span>
-                </button>
-                <button class="widget-type-btn" type="button" data-type="thermo">
-                  <span>🌡️</span><span>Temp</span>
-                </button>
-                <button class="widget-type-btn" type="button" data-type="gauge">
-                  <span>📈</span><span>Gauge</span>
-                </button>
-                <button class="widget-type-btn" type="button" data-type="dpad">
-                  <span>🕹️</span><span>D-Pad</span>
-                </button>
-                <button class="widget-type-btn" type="button" data-type="camera">
-                  <span>📷</span><span>Camera</span>
-                </button>
+                <button class="widget-type-btn" data-type="button">🟣 Button</button>
+                <button class="widget-type-btn" data-type="switch">⏻ Switch</button>
+                <button class="widget-type-btn" data-type="slider">🎚️ Slider</button>
+                <button class="widget-type-btn" data-type="thermo">🌡️ Thermo</button>
+                <button class="widget-type-btn" data-type="gauge">📈 Gauge</button>
+                <button class="widget-type-btn" data-type="dpad">🕹️ D-Pad</button>
+                <button class="widget-type-btn" data-type="camera">📷 Camera</button>
               </div>
             </div>
           </div>
-          <div class="widget-layout">
-            <div id="widgetGrid" class="widget-grid">
-              <div class="empty-hint">Chưa có widget.</div>
-            </div>
-          </div>
+          <div id="widgetGrid" class="widget-grid"><div class="empty-hint">Chưa có widget.</div></div>
         </section>
 
-        <!-- DEVICES -->
         <section id="devicesSection" style="display:none;">
-          <div class="row">
-            <input id="searchInput" placeholder="Search ID / name" />
+          <div class="row" style="flex-direction:row; gap:5px;">
+            <input id="claimDeviceId" placeholder="Device ID" />
+            <input id="claimDeviceName" placeholder="Name" />
+            <button class="secondary btn-sm" id="claimBtn">Add</button>
+            <button id="refreshBtn" class="btn-sm">Refresh</button>
           </div>
-          <div class="row" style="margin-top:4px;flex-direction:row;gap:6px;">
-            <button class="secondary btn-sm" id="toggleAutoBtn" type="button">Auto: OFF</button>
-            <button id="refreshBtn" class="btn-sm" type="button">Refresh</button>
-            <span class="small" id="status">...</span>
-          </div>
-          <div class="row" style="margin-top:6px;flex-direction:row;gap:6px;">
-            <input id="claimDeviceId" placeholder="Device ID" style="max-width:150px;" />
-            <input id="claimDeviceName" placeholder="Name" style="max-width:150px;" />
-            <button class="secondary btn-sm" id="claimBtn" type="button">Claim</button>
-          </div>
-
           <div class="device-list-wrapper">
             <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Tên</th>
-                  <th>Trạng thái</th>
-                  <th>Giá trị</th>
-                  <th>Cập nhật</th>
-                  <th>Ctrl</th>
-                </tr>
-              </thead>
-              <tbody id="deviceTableBody">
-                <tr><td colspan="6" class="small">Chưa có dữ liệu.</td></tr>
-              </tbody>
+              <thead><tr><th>ID</th><th>Tên</th><th>Status</th><th>Val</th><th>Time</th><th>Ctrl</th></tr></thead>
+              <tbody id="deviceTableBody"></tbody>
             </table>
           </div>
 
-          <!-- FIRMWARE -->
-          <hr style="margin:8px 0;border-color:#1f2937;" />
-          <div class="row">
-            <div class="small"><b>ESP32 firmware (MQTT)</b></div>
+          <hr style="border-color:#334155; margin:10px 0"/>
+          <div class="small"><b>ESP32 Firmware Gen</b></div>
+          <div class="row" style="flex-direction:row; flex-wrap:wrap; gap:5px;">
+            <input id="fwDeviceId" placeholder="Dev ID" style="width:120px" />
+            <input id="fwWifiSsid" placeholder="WiFi SSID" style="width:120px" />
+            <input id="fwWifiPass" placeholder="WiFi Pass" style="width:120px" />
+            <input id="fwMqttHost" placeholder="Broker" style="width:150px" value="broker.hivemq.com" />
           </div>
-          <div
-            class="row"
-            style="margin-top:4px;flex-direction:row;gap:6px;flex-wrap:wrap;"
-          >
-            <input id="fwDeviceId" placeholder="Device ID" style="max-width:150px;" />
-            <input id="fwDeviceName" placeholder="Tên thiết bị" style="max-width:180px;" />
-          </div>
-          <div
-            class="row"
-            style="margin-top:4px;flex-direction:row;gap:6px;flex-wrap:wrap;"
-          >
-            <input id="fwWifiSsid" placeholder="WiFi SSID" style="max-width:160px;" />
-            <input id="fwWifiPass" placeholder="WiFi pass" style="max-width:160px;" />
-          </div>
-          <div
-            class="row"
-            style="margin-top:4px;flex-direction:row;gap:6px;flex-wrap:wrap;"
-          >
-            <input id="fwMqttHost" placeholder="MQTT host" style="max-width:210px;" />
-            <input id="fwMqttPort" placeholder="Port" style="max-width:80px;" />
-          </div>
-          <div class="row" style="margin-top:4px;">
-            <table style="font-size:11px;width:100%;border-collapse:collapse;">
-              <thead>
-                <tr>
-                  <th>Tên</th>
-                  <th>GPIO</th>
-                  <th>Kiểu</th>
-                  <th>Xoá</th>
-                </tr>
-              </thead>
+          <div class="device-list-wrapper" style="max-height:150px">
+            <table>
               <tbody id="fwPinsTableBody"></tbody>
             </table>
-            <button
-              id="fwAddPinBtn"
-              class="secondary btn-sm"
-              type="button"
-              style="margin-top:4px;"
-            >
-              Thêm chân
-            </button>
+            <button id="fwAddPinBtn" class="secondary btn-sm" style="margin:5px">+ Pin</button>
           </div>
-          <div
-            class="row"
-            style="margin-top:4px;flex-direction:row;gap:6px;flex-wrap:wrap;align-items:center;"
-          >
-            <button id="fwGenerateBtn" class="btn-sm" type="button">Generate</button>
-            <button id="fwCopyBtn" class="secondary btn-sm" type="button">Copy code</button>
-            <span class="small" id="fwCopyStatus"></span>
+          <div class="row" style="flex-direction:row; gap:5px; margin-top:5px">
+            <button id="fwGenerateBtn" class="btn-sm">Generate Code</button>
+            <button id="fwCopyBtn" class="secondary btn-sm">Copy</button>
+            <span id="fwCopyStatus" class="small"></span>
           </div>
-          <div class="row" style="margin-top:4px;">
-            <textarea
-              id="fwCodeOutput"
-              style="
-                width:100%;
-                min-height:230px;
-                font-family:monospace;
-                font-size:12px;
-                background:#020617;
-                color:#e5e7eb;
-                border-radius:10px;
-                border:1px solid #111827;
-                padding:8px;
-              "
-            ></textarea>
-          </div>
+          <textarea id="fwCodeOutput" style="width:100%; height:150px; background:#0f172a; color:#ccc; margin-top:5px"></textarea>
         </section>
 
-        <!-- CAMERAS -->
         <section id="camerasSection" style="display:none;">
-          <div class="row" style="flex-direction:row;gap:6px;">
-            <input id="camIdInput" placeholder="Camera ID" style="max-width:120px;" />
-            <input id="camNameInput" placeholder="Tên" style="max-width:140px;" />
-          </div>
-          <div class="row">
+          <div class="row" style="flex-direction:row; gap:5px;">
+            <input id="camIdInput" placeholder="Cam ID" />
+            <input id="camNameInput" placeholder="Name" />
             <input id="camUrlInput" placeholder="Snapshot URL" />
-          </div>
-          <div
-            class="row"
-            style="margin-top:4px;flex-direction:row;gap:6px;align-items:center;"
-          >
-            <button id="camRegisterBtn" class="secondary btn-sm" type="button">
-              Lưu camera
-            </button>
-            <span class="small" id="camStatus">...</span>
+            <button id="camRegisterBtn" class="secondary btn-sm">Add</button>
           </div>
           <div class="device-list-wrapper">
             <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Tên</th>
-                  <th>Thao tác</th>
-                </tr>
-              </thead>
-              <tbody id="cameraTableBody">
-                <tr><td colspan="3" class="small">Chưa có camera.</td></tr>
-              </tbody>
+              <thead><tr><th>ID</th><th>Name</th><th>Action</th></tr></thead>
+              <tbody id="cameraTableBody"></tbody>
             </table>
           </div>
-
-          <hr style="margin:8px 0;border-color:#1f2937;" />
-          <div class="row">
-            <div class="small"><b>Laptop camera stream</b></div>
+          <hr style="border-color:#334155; margin:10px 0"/>
+          <div class="row" style="flex-direction:row; gap:5px; align-items:center">
+            <button id="startStreamBtn" class="secondary btn-sm">Start Stream</button>
+            <button id="stopStreamBtn" class="danger btn-sm" disabled>Stop</button>
+            <span id="camStreamStatus" class="small">Stopped</span>
           </div>
-          <div
-            class="row"
-            style="margin-top:4px;flex-direction:row;gap:6px;align-items:center;"
-          >
-            <button id="startStreamBtn" class="secondary btn-sm" type="button">Start</button>
-            <button id="stopStreamBtn" class="danger btn-sm" type="button" disabled>
-              Stop
-            </button>
-          </div>
-          <div class="row" style="margin-top:6px;">
-            <div class="small">Local preview:</div>
-            <video
-              id="localVideo"
-              autoplay
-              muted
-              playsinline
-              style="width:100%;max-height:180px;border-radius:9px;"
-            ></video>
-          </div>
-          <div class="row" style="margin-top:6px;">
-            <div class="small">Backend frame:</div>
-            <img id="serverVideo" />
-            <div id="camStreamStatus" class="small">...</div>
+          <div class="row" style="flex-direction:row; gap:10px; margin-top:10px">
+            <div style="flex:1"><div class="small">Local:</div><video id="localVideo" autoplay muted style="width:100%; border-radius:8px"></video></div>
+            <div style="flex:1"><div class="small">Server:</div><img id="serverVideo" style="width:100%; border-radius:8px" /></div>
           </div>
         </section>
 
-        <!-- ADMIN -->
         <section id="adminSection" style="display:none;">
-          <div class="row">
-            <div class="small">Quản lý user (admin).</div>
-          </div>
           <div class="device-list-wrapper">
             <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Username</th>
-                  <th>Email</th>
-                  <th>Role</th>
-                  <th>Tạo lúc</th>
-                  <th>Thao tác</th>
-                </tr>
-              </thead>
-              <tbody id="adminUserTableBody">
-                <tr><td colspan="6" class="small">...</td></tr>
-              </tbody>
+              <thead><tr><th>ID</th><th>User</th><th>Role</th><th>Action</th></tr></thead>
+              <tbody id="adminUserTableBody"></tbody>
             </table>
           </div>
         </section>
       </div>
 
-      <!-- DETAIL CARD -->
-      <div class="card detail-card">
-        <h2 style="margin:0 0 6px;font-size:14px;display:flex;align-items:center;gap:5px;">
-          Chi tiết
-        </h2>
-        <div id="detailEmpty">Chọn 1 device / camera.</div>
-
+      <div class="card detail-card" id="detailPanel">
+        <h2 style="font-size:14px; margin:0 0 10px">Chi tiết</h2>
+        <div id="detailEmpty" class="small">Chọn thiết bị để xem.</div>
+        
         <div id="deviceDetailPanel" style="display:none;">
-          <div class="small">Device ID</div>
-          <div id="detailId"></div>
-          <div class="small" style="margin-top:4px;">Tên</div>
-          <div id="detailName"></div>
-          <div class="small" style="margin-top:4px;">Trạng thái</div>
-          <div id="detailState"></div>
-          <div class="small" style="margin-top:4px;">Giá trị</div>
-          <div id="detailValue"></div>
-          <div class="small" style="margin-top:4px;">Cập nhật</div>
-          <div id="detailUpdated"></div>
-          <div class="small" style="margin-top:4px;">Sensors</div>
-          <div id="detailSensors" class="small"></div>
-          <div class="small" style="margin-top:4px;">History (trong phiên)</div>
-          <canvas id="historyCanvas"></canvas>
+          <div class="small">ID: <b id="detailId"></b></div>
+          <div class="small">Name: <b id="detailName"></b></div>
+          <div class="small">State: <span id="detailState"></span></div>
+          <div class="small">Val: <b id="detailValue"></b></div>
+          <div class="small" style="margin-top:5px">Sensors:</div>
+          <div id="detailSensors" class="small" style="background:#1e293b; padding:5px; border-radius:4px"></div>
+          <canvas id="historyCanvas" style="width:100%; height:100px; margin-top:10px"></canvas>
         </div>
 
         <div id="cameraDetailPanel" style="display:none;">
-          <div class="small">Camera ID</div>
-          <div id="camDetailId"></div>
-          <div class="small" style="margin-top:4px;">Tên</div>
-          <div id="camDetailName"></div>
-          <div class="small" style="margin-top:4px;">URL</div>
-          <div id="camDetailUrl" class="small"></div>
-          <div class="small" style="margin-top:4px;">Snapshot</div>
-          <div style="margin-top:4px;">
-            <img id="camDetailImg" class="cam-preview" alt="Camera snapshot" />
-          </div>
+          <div class="small">ID: <b id="camDetailId"></b></div>
+          <div class="small">URL: <a id="camDetailUrl" target="_blank" href="#">Link</a></div>
+          <img id="camDetailImg" class="cam-preview" style="width:100%; margin-top:5px; border-radius:4px" />
         </div>
       </div>
     </div>
   </div>
 
-  <!-- WIDGET CONFIG POPUP -->
   <div id="widgetConfigOverlay" class="widget-config-overlay">
     <div id="widgetConfigPanel" class="widget-config">
       <div class="widget-config-header">
-        <span>Cấu hình widget</span>
-        <button type="button" class="icon-btn btn-sm" id="widgetConfigCloseBtn">✕</button>
+        <span>Cấu hình</span><button class="icon-btn btn-sm" id="widgetConfigCloseBtn">✕</button>
       </div>
-      <div class="widget-config-empty">Chọn 1 widget để chỉnh.</div>
       <div class="widget-config-form">
-        <div class="widget-config-row">
-          <span>Tên</span>
-          <input id="widgetConfigTitle" placeholder="Tên widget" />
-        </div>
-        <div class="widget-config-row" id="widgetConfigDeviceRow">
-          <span>Device ID</span>
-          <select id="widgetConfigDevice"></select>
-        </div>
-        <div class="widget-config-row" id="widgetConfigCameraRow" style="display:none;">
-          <span>Camera ID</span>
-          <select id="widgetConfigCamera"></select>
-        </div>
-        <div class="widget-config-row">
-          <span>Màu</span>
+        <div class="widget-config-row"><span>Tên</span><input id="widgetConfigTitle" /></div>
+        <div class="widget-config-row"><span>Device</span><select id="widgetConfigDevice"></select></div>
+        <div class="widget-config-row"><span>Camera</span><select id="widgetConfigCamera"></select></div>
+        <div class="widget-config-row"><span>Sensor Key</span><input id="widgetConfigSensor" placeholder="temp, hum..." /></div>
+        <div class="widget-config-row"><span>Màu</span>
           <select id="widgetConfigTheme">
-            <option value="green">Xanh lá</option>
-            <option value="blue">Xanh dương</option>
-            <option value="amber">Vàng cam</option>
-            <option value="pink">Hồng</option>
-            <option value="gray">Xám</option>
+            <option value="green">Xanh lá</option><option value="blue">Xanh dương</option>
+            <option value="amber">Cam</option><option value="pink">Hồng</option>
           </select>
         </div>
-        <!-- NEW: chọn kích thước widget -->
-        <div class="widget-config-row">
-          <span>Kích thước</span>
+        <div class="widget-config-row"><span>Size</span>
           <select id="widgetConfigSize">
-            <option value="s">Nhỏ</option>
-            <option value="m" selected>Vừa</option>
-            <option value="l">Lớn</option>
+            <option value="s">Nhỏ (3 ô)</option><option value="m">Vừa (4 ô)</option><option value="l">Lớn (6 ô)</option>
           </select>
         </div>
-        <div class="widget-config-row" id="widgetConfigRangeRow" style="display:none;">
-          <span>Range</span>
-          <input
-            id="widgetConfigRangeMin"
-            type="number"
-            style="max-width:70px;"
-            placeholder="Min"
-          />
-          <input
-            id="widgetConfigRangeMax"
-            type="number"
-            style="max-width:70px;"
-            placeholder="Max"
-          />
+        <div class="widget-config-row" id="widgetConfigRangeRow" style="display:none">
+          <span>Range</span><input id="widgetConfigRangeMin" type="number" placeholder="Min" style="width:60px" />
+          <input id="widgetConfigRangeMax" type="number" placeholder="Max" style="width:60px" />
         </div>
       </div>
     </div>
   </div>
 
+  <script>
+    // Script nhỏ để switch tab Auth
+    function switchAuth(tab) {
+      document.getElementById('loginForm').style.display = tab==='login'?'block':'none';
+      document.getElementById('registerForm').style.display = tab==='register'?'block':'none';
+      document.getElementById('tabLogin').className = tab==='login'?'active':'';
+      document.getElementById('tabRegister').className = tab==='register'?'active':'';
+    }
+  </script>
   <script src="app.js" defer></script>
 </body>
 </html>
