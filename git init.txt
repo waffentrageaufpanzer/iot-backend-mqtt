@@ -1,0 +1,7 @@
+cd /d D:\8.0\IoT\backend
+git init
+git add .
+git commit -m "Init IoT platform UI"
+git branch -M main
+git remote add origin https://github.com/waffentrageaufpanzer/iot-backend-mqtt.git
+git push -u origin main
